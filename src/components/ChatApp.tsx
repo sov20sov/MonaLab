@@ -29,6 +29,11 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [pendingRequestLength, setPendingRequestLength] = useState(0);
 
+  // نتحقق من دعم المتصفح للـ streaming عبر fetch قبل تفعيله
+  const supportsStreaming =
+    typeof ReadableStream !== 'undefined' &&
+    typeof (Response.prototype as any).body?.getReader === 'function';
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
