@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { AI_SYSTEM_INSTRUCTION } from '../config/aiConfig';
 
-const NVIDIA_INVOKE_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
+// استدعاء النموذج عبر OpenRouter
+const NVIDIA_INVOKE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const NVIDIA_MODEL = 'moonshotai/kimi-k2.5';
 
 type ChatRole = 'user' | 'model';
