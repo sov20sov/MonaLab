@@ -38,19 +38,25 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
   };
 
   useEffect(() => {
-    // تحميل الجلسات من التخزين المحلي عند أول تحميل
     const storedSessions = localStorage.getItem('academic_assistant_sessions');
-    const storedMessages = localStorage.getItem('academic_assistant_messages');
     const storedActiveSession = localStorage.getItem('academic_assistant_active_session');
 
     if (storedSessions) {
       setSessions(JSON.parse(storedSessions));
     }
-    if (storedMessages) {
-      setMessages(JSON.parse(storedMessages));
-    }
     if (storedActiveSession) {
       setActiveSessionId(storedActiveSession);
+      const sessionMessages = localStorage.getItem(
+        `academic_assistant_messages_${storedActiveSession}`,
+      );
+      if (sessionMessages) {
+        setMessages(JSON.parse(sessionMessages));
+        return;
+      }
+    }
+    const storedMessages = localStorage.getItem('academic_assistant_messages');
+    if (storedMessages) {
+      setMessages(JSON.parse(storedMessages));
     }
   }, []);
 
@@ -64,7 +70,13 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
   useEffect(() => {
     scrollToBottom();
     localStorage.setItem('academic_assistant_messages', JSON.stringify(messages));
-  }, [messages]);
+    if (activeSessionId) {
+      localStorage.setItem(
+        `academic_assistant_messages_${activeSessionId}`,
+        JSON.stringify(messages),
+      );
+    }
+  }, [messages, activeSessionId]);
 
   useEffect(() => {
     localStorage.setItem('academic_assistant_sessions', JSON.stringify(sessions));
@@ -247,12 +259,6 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
         content: result.content,
       };
       setMessages((prev) => [...prev, aiMessage]);
-      if (activeSessionId) {
-        localStorage.setItem(
-          `academic_assistant_messages_${activeSessionId}`,
-          JSON.stringify([...nextMessages, aiMessage]),
-        );
-      }
     } else if (result.aborted) {
       setStreamingContent(null);
       const stoppedMessage: Message = {
@@ -295,12 +301,6 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
         content: result.content,
       };
       setMessages((prev) => [...prev, aiMessage]);
-      if (activeSessionId) {
-        localStorage.setItem(
-          `academic_assistant_messages_${activeSessionId}`,
-          JSON.stringify([...msgs, aiMessage]),
-        );
-      }
       lastFailedMessagesRef.current = null;
       setLastErrorMessageId(null);
     } else if (result.aborted) {

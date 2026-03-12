@@ -1,7 +1,11 @@
 import 'dotenv/config';
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
-import { AI_MODEL_NAME, AI_SYSTEM_INSTRUCTION } from '../../../src/config/aiConfig';
+import {
+  AI_MODEL_NAME,
+  AI_SYSTEM_INSTRUCTION,
+  AI_GENERATION_CONFIG,
+} from '../../../src/config/aiConfig';
 import { callNvidiaChat } from '../../../src/lib/nvidiaChat';
 import { prisma } from '../../../src/lib/prisma';
 
@@ -13,17 +17,17 @@ interface ChatMessage {
 }
 
 type RateInfo = { count: number; windowStart: number };
-const RATE_LIMIT_WINDOW_MS = 60_000; // دقيقة واحدة
-const RATE_LIMIT_MAX_REQUESTS = 60;  // حد الطلبات في الإنتاج
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 60;
 const rateStore = new Map<string, RateInfo>();
 
-function checkRateLimit(_ip: string | null | undefined): { ok: boolean; retryAfterMs?: number } {
-  // تعطيل حد الطلبات إلا في الإنتاج لتجنب 429 من طرفنا (الـ 429 يأتي من Gemini فقط)
-  if (process.env.NODE_ENV !== 'production') {
-    return { ok: true };
-  }
+function checkRateLimit(ip: string | null | undefined): {
+  ok: boolean;
+  retryAfterMs?: number;
+} {
+  if (process.env.NODE_ENV !== 'production') return { ok: true };
 
-  const key = _ip || 'unknown';
+  const key = ip || 'unknown';
   const now = Date.now();
   const current = rateStore.get(key);
 
@@ -39,16 +43,65 @@ function checkRateLimit(_ip: string | null | undefined): { ok: boolean; retryAft
   }
 
   if (current.count >= RATE_LIMIT_MAX_REQUESTS) {
-    const retryAfterMs = RATE_LIMIT_WINDOW_MS - elapsed;
-    return { ok: false, retryAfterMs };
+    return { ok: false, retryAfterMs: RATE_LIMIT_WINDOW_MS - elapsed };
   }
 
   current.count += 1;
-  rateStore.set(key, current);
   return { ok: true };
 }
 
-export const maxDuration = 60; // ثوانٍ — زيادة زمن تنفيذ الدالة على Vercel قدر الإمكان
+function is429Error(err: any): boolean {
+  return (
+    err?.status === 429 ||
+    err?.httpStatusCode === 429 ||
+    err?.statusCode === 429 ||
+    err?.message?.includes?.('429') ||
+    err?.message?.includes?.('Too Many Requests') ||
+    err?.message?.includes?.('quota') ||
+    err?.message?.includes?.('rate') ||
+    err?.code === 'RESOURCE_EXHAUSTED'
+  );
+}
+
+async function persistConversation(
+  trimmed: ChatMessage[],
+  aiContent: string,
+  conversationTitle: string | undefined,
+  userId: string | null | undefined,
+): Promise<string | undefined> {
+  if (!prisma || !aiContent) return undefined;
+  try {
+    const title =
+      typeof conversationTitle === 'string'
+        ? conversationTitle.trim().slice(0, 255) || 'بحث جديد'
+        : 'بحث جديد';
+    const allMessages = [
+      ...trimmed,
+      { role: 'model' as const, content: aiContent },
+    ];
+    const conv = await prisma.conversation.create({
+      data: {
+        title,
+        userId:
+          typeof userId === 'string' && userId.trim() ? userId.trim() : null,
+        messages: {
+          create: allMessages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        },
+      },
+    });
+    return conv.id;
+  } catch {
+    return undefined;
+  }
+}
+
+export const maxDuration = 60;
+
+const MAX_MESSAGES = 20;
+const MAX_CONTENT_LENGTH = 50_000;
 
 export async function POST(req: NextRequest) {
   try {
@@ -69,6 +122,27 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const ip =
+      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+      req.headers.get('x-real-ip');
+
+    const rateCheck = checkRateLimit(ip);
+    if (!rateCheck.ok) {
+      const retryAfter = Math.ceil(
+        (rateCheck.retryAfterMs ?? RATE_LIMIT_WINDOW_MS) / 1000,
+      );
+      return NextResponse.json(
+        {
+          error:
+            'تم تجاوز حد الطلبات. الرجاء الانتظار ثم المحاولة مجدداً.',
+        },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(retryAfter) },
+        },
+      );
+    }
+
     const body = (await req.json()) as {
       messages?: ChatMessage[];
       persist?: boolean;
@@ -76,28 +150,39 @@ export async function POST(req: NextRequest) {
       userId?: string | null;
       stream?: boolean;
     };
-    const { messages, persist, title: conversationTitle, userId, stream: wantStream } = body;
-
-    const ip =
-      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-      req.headers.get('x-real-ip');
+    const {
+      messages,
+      persist,
+      title: conversationTitle,
+      userId,
+      stream: wantStream,
+    } = body;
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return NextResponse.json({ error: 'قائمة الرسائل غير صالحة.' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'قائمة الرسائل غير صالحة.' },
+        { status: 400 },
+      );
     }
 
-    const MAX_MESSAGES = 20;
-    const MAX_CONTENT_LENGTH = 50_000;
     const trimmed = messages.slice(-MAX_MESSAGES);
     for (const m of trimmed) {
-      if (typeof m.content !== 'string' || m.content.length > MAX_CONTENT_LENGTH) {
+      if (
+        typeof m.content !== 'string' ||
+        m.content.length > MAX_CONTENT_LENGTH
+      ) {
         return NextResponse.json(
-          { error: `كل رسالة يجب ألا تتجاوز ${MAX_CONTENT_LENGTH} حرفاً.` },
+          {
+            error: `كل رسالة يجب ألا تتجاوز ${MAX_CONTENT_LENGTH} حرفاً.`,
+          },
           { status: 400 },
         );
       }
       if (m.role !== 'user' && m.role !== 'model') {
-        return NextResponse.json({ error: 'دور الرسالة غير صالح.' }, { status: 400 });
+        return NextResponse.json(
+          { error: 'دور الرسالة غير صالح.' },
+          { status: 400 },
+        );
       }
     }
 
@@ -106,131 +191,156 @@ export async function POST(req: NextRequest) {
       parts: [{ text: m.content }],
     }));
 
+    const geminiConfig = {
+      systemInstruction: AI_SYSTEM_INSTRUCTION,
+      ...AI_GENERATION_CONFIG,
+    };
+
     let lastError: any;
 
-    // محاولة Gemini أولاً (إن وجد المفتاح)
+    /* ── Gemini ── */
     if (geminiKey) {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
       const maxRetries = 3;
-      const baseDelayMs = 4000;
-      const maxDelayMs = 15000;
+      const baseDelayMs = 4_000;
+      const maxDelayMs = 15_000;
 
-      // استجابة تدريجية (streaming) لظهور النص بسرعة
+      /* streaming path */
       if (wantStream) {
         try {
-          const stream = ai.models.generateContentStream({
+          const streamResult = ai.models.generateContentStream({
             model: AI_MODEL_NAME,
             contents: historyParts,
-            config: {
-              systemInstruction: AI_SYSTEM_INSTRUCTION,
-            },
+            config: geminiConfig,
           });
+
           let fullContent = '';
           const encoder = new TextEncoder();
+
           const readable = new ReadableStream({
             async start(controller) {
               try {
-                for await (const chunk of await stream) {
-                  const res = chunk as { text?: string; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+                for await (const chunk of await streamResult) {
+                  const res = chunk as {
+                    text?: string;
+                    candidates?: Array<{
+                      content?: {
+                        parts?: Array<{ text?: string }>;
+                      };
+                    }>;
+                  };
                   const part =
                     typeof res?.text === 'string'
                       ? res.text
-                      : res?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+                      : (res?.candidates?.[0]?.content?.parts?.[0]?.text ??
+                        '');
                   if (part) {
                     fullContent += part;
-                    controller.enqueue(encoder.encode(JSON.stringify({ delta: part }) + '\n'));
+                    controller.enqueue(
+                      encoder.encode(
+                        JSON.stringify({ delta: part }) + '\n',
+                      ),
+                    );
                   }
                 }
+
                 let conversationId: string | undefined;
-                if (persist && prisma && fullContent) {
-                  try {
-                    const title = typeof conversationTitle === 'string' ? conversationTitle.trim().slice(0, 255) || 'بحث جديد' : 'بحث جديد';
-                    const allMessages = [...trimmed, { role: 'model' as const, content: fullContent }];
-                    const conv = await prisma.conversation.create({
-                      data: {
-                        title,
-                        userId: typeof userId === 'string' && userId.trim() ? userId.trim() : null,
-                        messages: {
-                          create: allMessages.map((m) => ({ role: m.role, content: m.content })),
-                        },
-                      },
-                    });
-                    conversationId = conv.id;
-                  } catch (_) {
-                    // تجاهل فشل الحفظ
-                  }
+                if (persist) {
+                  conversationId = await persistConversation(
+                    trimmed,
+                    fullContent,
+                    conversationTitle,
+                    userId,
+                  );
                 }
-                controller.enqueue(encoder.encode(JSON.stringify({ done: true, content: fullContent, conversationId }) + '\n'));
+
+                controller.enqueue(
+                  encoder.encode(
+                    JSON.stringify({
+                      done: true,
+                      content: fullContent,
+                      conversationId,
+                    }) + '\n',
+                  ),
+                );
               } catch (e: any) {
-                controller.enqueue(encoder.encode(JSON.stringify({ error: e?.message ?? 'Stream error' }) + '\n'));
+                controller.enqueue(
+                  encoder.encode(
+                    JSON.stringify({
+                      error: e?.message ?? 'خطأ أثناء توليد الرد.',
+                    }) + '\n',
+                  ),
+                );
               } finally {
                 controller.close();
               }
             },
           });
+
           return new Response(readable, {
             headers: { 'Content-Type': 'application/x-ndjson' },
           });
         } catch (streamErr: any) {
           lastError = streamErr;
-          // نقع في السلوك العادي غير الـ stream أدناه
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[api/chat] Streaming failed, falling back to non-streaming:',
+            streamErr?.message,
+          );
         }
       }
 
+      /* non-streaming path (also fallback if streaming threw) */
       if (!wantStream || lastError) {
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
           try {
             const result = await ai.models.generateContent({
               model: AI_MODEL_NAME,
               contents: historyParts,
-              config: {
-                systemInstruction: AI_SYSTEM_INSTRUCTION,
-              },
+              config: geminiConfig,
             });
 
-            const res = result as { text?: string; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+            const res = result as {
+              text?: string;
+              candidates?: Array<{
+                content?: { parts?: Array<{ text?: string }> };
+              }>;
+            };
             const text =
               typeof res?.text === 'string'
                 ? res.text
-                : res?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+                : (res?.candidates?.[0]?.content?.parts?.[0]?.text ?? '');
 
-            if (persist && prisma) {
-              try {
-                const title = typeof conversationTitle === 'string' ? conversationTitle.trim().slice(0, 255) || 'بحث جديد' : 'بحث جديد';
-                const allMessages = [...trimmed, { role: 'model' as const, content: text }];
-                const conv = await prisma.conversation.create({
-                  data: {
-                    title,
-                    userId: typeof userId === 'string' && userId.trim() ? userId.trim() : null,
-                    messages: {
-                      create: allMessages.map((m) => ({ role: m.role, content: m.content })),
-                    },
-                  },
+            if (persist) {
+              const conversationId = await persistConversation(
+                trimmed,
+                text,
+                conversationTitle,
+                userId,
+              );
+              if (conversationId) {
+                return NextResponse.json({
+                  content: text,
+                  conversationId,
                 });
-                return NextResponse.json({ content: text, conversationId: conv.id });
-              } catch (_) {
-                // تجاهل فشل الحفظ، نُرجع المحتوى فقط
               }
             }
+
             return NextResponse.json({ content: text });
           } catch (err: any) {
             lastError = err;
-            const is429 =
-              err?.status === 429 ||
-              err?.httpStatusCode === 429 ||
-              err?.statusCode === 429 ||
-              err?.message?.includes?.('429') ||
-              err?.message?.includes?.('Too Many Requests') ||
-              err?.message?.includes?.('quota') ||
-              err?.message?.includes?.('rate') ||
-              err?.code === 'RESOURCE_EXHAUSTED';
 
-            if (is429 && attempt < maxRetries) {
-              const expDelay = Math.min(baseDelayMs * Math.pow(2, Math.min(attempt, 4)), maxDelayMs);
-              const jitter = Math.random() * 3000;
+            if (is429Error(err) && attempt < maxRetries) {
+              const expDelay = Math.min(
+                baseDelayMs * Math.pow(2, Math.min(attempt, 4)),
+                maxDelayMs,
+              );
+              const jitter = Math.random() * 3_000;
               const delay = Math.floor(expDelay + jitter);
               // eslint-disable-next-line no-console
-              console.warn(`[api/chat] Gemini 429 attempt ${attempt + 1}/${maxRetries + 1}, retry after ${Math.round(delay / 1000)}s`);
+              console.warn(
+                `[api/chat] Gemini 429 attempt ${attempt + 1}/${maxRetries + 1}, retry after ${Math.round(delay / 1000)}s`,
+              );
               await new Promise((r) => setTimeout(r, delay));
               continue;
             }
@@ -240,27 +350,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // عند فشل Gemini أو غياب المفتاح: استخدام NVIDIA إن وجد Nivedi_api_key
+    /* ── NVIDIA fallback ── */
     if (nvidiaKey) {
       const nvResult = await callNvidiaChat(trimmed, nvidiaKey);
       if ('content' in nvResult) {
         const text = nvResult.content;
-        if (persist && prisma) {
-          try {
-            const title = typeof conversationTitle === 'string' ? conversationTitle.trim().slice(0, 255) || 'بحث جديد' : 'بحث جديد';
-            const allMessages = [...trimmed, { role: 'model' as const, content: text }];
-            const conv = await prisma.conversation.create({
-              data: {
-                title,
-                userId: typeof userId === 'string' && userId.trim() ? userId.trim() : null,
-                messages: {
-                  create: allMessages.map((m) => ({ role: m.role, content: m.content })),
-                },
-              },
-            });
-            return NextResponse.json({ content: text, conversationId: conv.id });
-          } catch (_) {
-            // تجاهل فشل الحفظ
+        if (persist) {
+          const conversationId = await persistConversation(
+            trimmed,
+            text,
+            conversationTitle,
+            userId,
+          );
+          if (conversationId) {
+            return NextResponse.json({ content: text, conversationId });
           }
         }
         return NextResponse.json({ content: text });
@@ -273,7 +376,7 @@ export async function POST(req: NextRequest) {
     throw lastError ?? new Error('لا يوجد مزوّد ذكاء اصطناعي متاح.');
   } catch (error: any) {
     // eslint-disable-next-line no-console
-    console.error('[next-api] Error in /api/chat:', error);
+    console.error('[api/chat] Error:', error);
 
     if (error?.status === 401 || error?.code === 'UNAUTHENTICATED') {
       return NextResponse.json(
@@ -285,11 +388,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (
-      error?.status === 429 ||
-      error?.httpStatusCode === 429 ||
-      error?.code === 'RESOURCE_EXHAUSTED'
-    ) {
+    if (is429Error(error)) {
       return NextResponse.json(
         {
           error:
@@ -314,4 +413,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-
