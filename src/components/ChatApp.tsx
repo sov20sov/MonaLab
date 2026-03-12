@@ -103,7 +103,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
   const sendMessagesToAPI = async (
     messagesToSend: Message[],
     signal?: AbortSignal,
-    options?: { persist?: boolean; title?: string; stream?: boolean },
+    options?: { stream?: boolean },
   ): Promise<{ ok: true; content: string; conversationId?: string; streamed?: boolean } | { ok: false; error: string; aborted?: boolean }> => {
     try {
       const response = await fetch('/api/chat', {
@@ -112,9 +112,6 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
         body: JSON.stringify({
           messages: messagesToSend.map((m) => ({ role: m.role, content: m.content })),
           userId: null,
-          // في هذه المرحلة نعطّل الحفظ في قاعدة البيانات لتقليل زمن الاستجابة واحتمال الأخطاء
-          // يمكن إعادة تفعيل persist لاحقاً عند ثبات الخدمة
-          ...(options?.persist && false && { persist: true, title: options.title || 'بحث جديد' }),
           stream: options?.stream ?? true,
         }),
         signal,
@@ -212,13 +209,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    const sessionTitle = sessions.find((s) => s.id === activeSessionId)?.title;
-    const titleForApi = messages.length === 0
-      ? (userMessage.content.slice(0, 60).trim() || 'بحث جديد')
-      : (sessionTitle || 'بحث جديد');
     const result = await sendMessagesToAPI(nextMessages, controller.signal, {
-      persist: false,
-      title: titleForApi,
       stream: true,
     });
     abortControllerRef.current = null;
@@ -269,8 +260,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
     setStreamingContent('');
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    const sessionTitle = sessions.find((s) => s.id === activeSessionId)?.title ?? 'بحث جديد';
-    const result = await sendMessagesToAPI(msgs, controller.signal, { persist: false, title: sessionTitle });
+    const result = await sendMessagesToAPI(msgs, controller.signal, { stream: true });
     abortControllerRef.current = null;
     const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString());
     if (result.ok) {
