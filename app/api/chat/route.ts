@@ -62,6 +62,31 @@ function is429Error(err: any): boolean {
   );
 }
 
+function humanizeError(err: any): string {
+  const msg: string = err?.message ?? '';
+
+  if (
+    is429Error(err) ||
+    msg.includes('quota') ||
+    msg.includes('exceeded')
+  ) {
+    return 'وصل حد الطلبات أو الحصة المجانية. انتظر دقيقة ثم اضغط «إعادة المحاولة».';
+  }
+  if (err?.status === 401 || err?.code === 'authentication_error') {
+    return 'حدثت مشكلة في مفتاح الاتصال بخدمة الذكاء الاصطناعي. الرجاء مراجعة إعدادات الخادم.';
+  }
+  if (err?.status === 400 || msg.includes('invalid')) {
+    return 'حدث خطأ في صياغة الطلب. حاول إعادة صياغة رسالتك.';
+  }
+  if (msg === 'TIMEOUT' || msg.includes('timeout') || msg.includes('Timeout')) {
+    return 'انتهت مهلة الاتصال بخدمة الذكاء الاصطناعي. الرجاء المحاولة مجدداً.';
+  }
+  if (msg.includes('network') || msg.includes('connect') || msg.includes('ECONNREFUSED')) {
+    return 'فشل الاتصال بخدمة الذكاء الاصطناعي. تحقق من اتصال الإنترنت وحاول مجدداً.';
+  }
+  return 'حدث خطأ غير متوقع. الرجاء المحاولة لاحقاً.';
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     promise,
@@ -263,7 +288,7 @@ export async function POST(req: NextRequest) {
             } catch (e: any) {
               clearInterval(keepAliveId);
               ping({
-                error: e?.message ?? 'خطأ أثناء توليد الرد.',
+                error: humanizeError(e),
               });
             } finally {
               clearInterval(keepAliveId);
@@ -283,9 +308,13 @@ export async function POST(req: NextRequest) {
         lastError = streamErr;
         // eslint-disable-next-line no-console
         console.warn(
-          '[api/chat] Streaming init failed, falling back to non-streaming:',
+          '[api/chat] Streaming init failed:',
           streamErr?.message,
         );
+
+        if (is429Error(streamErr) || streamErr?.status === 401) {
+          throw streamErr;
+        }
       }
     }
 
@@ -353,48 +382,15 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line no-console
     console.error('[api/chat] Error:', error);
 
-    if (error?.status === 401 || error?.code === 'authentication_error') {
-      return NextResponse.json(
-        {
-          error:
-            'حدثت مشكلة في مفتاح الاتصال بخدمة الذكاء الاصطناعي. الرجاء مراجعة إعدادات الخادم.',
-        },
-        { status: 500 },
-      );
-    }
-
-    if (is429Error(error)) {
-      return NextResponse.json(
-        {
-          error:
-            'وصل حد الطلبات. انتظر دقيقة ثم اضغط «إعادة المحاولة».',
-        },
-        { status: 429 },
-      );
-    }
-
-    if (error?.message === 'TIMEOUT') {
-      return NextResponse.json(
-        {
-          error:
-            'انتهت مهلة الاتصال بخدمة الذكاء الاصطناعي. الرجاء المحاولة مجدداً.',
-        },
-        { status: 504 },
-      );
-    }
-
-    const detail =
-      process.env.NODE_ENV === 'development' && error
-        ? String(error?.message ?? error?.toString?.() ?? error)
-        : null;
+    const statusCode = is429Error(error)
+      ? 429
+      : error?.message === 'TIMEOUT'
+        ? 504
+        : 500;
 
     return NextResponse.json(
-      {
-        error:
-          'حدث خطأ غير متوقع أثناء معالجة الطلب في الخادم. الرجاء المحاولة لاحقاً.',
-        ...(detail && { detail }),
-      },
-      { status: 500 },
+      { error: humanizeError(error) },
+      { status: statusCode },
     );
   }
 }

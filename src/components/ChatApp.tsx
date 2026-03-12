@@ -193,15 +193,12 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
       }
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        let serverMessage =
+        const serverMessage =
           typeof data?.error === 'string'
             ? data.error
             : response.status === 429
               ? 'وصل حد الطلبات. انتظر دقيقة ثم استخدم زر «إعادة المحاولة» (إعادة محاولة تلقائية خلال 60 ثانية).'
               : 'فشل الاتصال بالخادم. يرجى المحاولة لاحقاً.';
-        if (typeof data?.detail === 'string' && data.detail) {
-          serverMessage += ` (${data.detail})`;
-        }
         return { ok: false, error: serverMessage };
       }
       return { ok: true, content: data.content ?? '', conversationId: data.conversationId };
@@ -210,7 +207,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
       if (err?.name === 'AbortError') {
         return { ok: false, error: '', aborted: true };
       }
-      return { ok: false, error: err?.message ?? 'فشل الاتصال بالخادم.' };
+      return { ok: false, error: 'فشل الاتصال بالخادم. تحقق من اتصال الإنترنت وحاول مجدداً.' };
     }
   };
 
