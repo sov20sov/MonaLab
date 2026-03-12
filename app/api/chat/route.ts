@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { NextRequest, NextResponse } from 'next/server';
-import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
 import {
   AI_MODEL_NAME,
   AI_SYSTEM_INSTRUCTION,
@@ -58,7 +58,7 @@ function is429Error(err: any): boolean {
     err?.message?.includes?.('Too Many Requests') ||
     err?.message?.includes?.('quota') ||
     err?.message?.includes?.('rate') ||
-    err?.code === 'rate_limit_exceeded'
+    err?.code === 'RESOURCE_EXHAUSTED'
   );
 }
 
@@ -72,7 +72,7 @@ function humanizeError(err: any): string {
   ) {
     return 'وصل حد الطلبات أو الحصة المجانية. انتظر دقيقة ثم اضغط «إعادة المحاولة».';
   }
-  if (err?.status === 401 || err?.code === 'authentication_error') {
+  if (err?.status === 401) {
     return 'حدثت مشكلة في مفتاح الاتصال بخدمة الذكاء الاصطناعي. الرجاء مراجعة إعدادات الخادم.';
   }
   if (err?.status === 400 || msg.includes('invalid')) {
@@ -135,18 +135,22 @@ export const maxDuration = 60;
 
 const MAX_MESSAGES = 20;
 const MAX_CONTENT_LENGTH = 50_000;
-const OPENAI_CALL_TIMEOUT_MS = 50_000;
+const GEMINI_CALL_TIMEOUT_MS = 50_000;
 const KEEP_ALIVE_INTERVAL_MS = 8_000;
 
 export async function POST(req: NextRequest) {
   try {
-    const openaiKey = (process.env.OPENAI_API_KEY ?? '').trim();
+    const geminiKey = (
+      process.env.GEMINI_API_KEY ??
+      process.env.GOOGLE_API_KEY ??
+      ''
+    ).trim();
 
-    if (!openaiKey) {
+    if (!geminiKey) {
       return NextResponse.json(
         {
           error:
-            'أضف OPENAI_API_KEY في .env أو .env.local ثم أعد تشغيل السيرفر.',
+            'أضف GEMINI_API_KEY في .env أو .env.local ثم أعد تشغيل السيرفر.',
         },
         { status: 500 },
       );
@@ -216,26 +220,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const client = new OpenAI({ apiKey: openaiKey });
-
-    const inputMessages = trimmed.map((m) => ({
-      role: (m.role === 'user' ? 'user' : 'assistant') as
-        | 'user'
-        | 'assistant',
-      content: m.content,
+    const historyParts = trimmed.map((m) => ({
+      role: m.role === 'user' ? 'user' : 'model',
+      parts: [{ text: m.content }],
     }));
+
+    const geminiConfig = {
+      systemInstruction: AI_SYSTEM_INSTRUCTION,
+      ...AI_GENERATION_CONFIG,
+    };
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
 
     let lastError: any;
 
-    /* ── Streaming path ── */
     if (wantStream) {
       try {
-        const stream = await client.responses.create({
+        const streamPromise = ai.models.generateContentStream({
           model: AI_MODEL_NAME,
-          instructions: AI_SYSTEM_INSTRUCTION,
-          input: inputMessages,
-          stream: true,
-          ...AI_GENERATION_CONFIG,
+          contents: historyParts,
+          config: geminiConfig,
         });
 
         let fullContent = '';
@@ -249,7 +253,6 @@ export async function POST(req: NextRequest) {
                   encoder.encode(JSON.stringify(obj) + '\n'),
                 );
               } catch {
-                /* controller closed */
               }
             };
 
@@ -261,18 +264,26 @@ export async function POST(req: NextRequest) {
             );
 
             try {
-              for await (const event of stream) {
-                if (event.type === 'response.output_text.delta') {
-                  clearInterval(keepAliveId);
-                  const part = event.delta;
-                  if (part) {
-                    fullContent += part;
-                    ping({ delta: part });
-                  }
+              for await (const chunk of await streamPromise) {
+                clearInterval(keepAliveId);
+                const res = chunk as {
+                  text?: string;
+                  candidates?: Array<{
+                    content?: {
+                      parts?: Array<{ text?: string }>;
+                    };
+                  }>;
+                };
+                const part =
+                  typeof res?.text === 'string'
+                    ? res.text
+                    : (res?.candidates?.[0]?.content?.parts?.[0]?.text ??
+                      '');
+                if (part) {
+                  fullContent += part;
+                  ping({ delta: part });
                 }
               }
-
-              clearInterval(keepAliveId);
 
               let conversationId: string | undefined;
               if (persist) {
@@ -308,34 +319,37 @@ export async function POST(req: NextRequest) {
         lastError = streamErr;
         // eslint-disable-next-line no-console
         console.warn(
-          '[api/chat] Streaming init failed:',
+          '[api/chat] Streaming init failed, falling back to non-streaming:',
           streamErr?.message,
         );
-
-        if (is429Error(streamErr) || streamErr?.status === 401) {
-          throw streamErr;
-        }
       }
     }
 
-    /* ── Non-streaming path (also fallback if streaming init threw) ── */
     const maxRetries = 2;
     const baseDelayMs = 3_000;
     const maxDelayMs = 8_000;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const response = await withTimeout(
-          client.responses.create({
+        const result = await withTimeout(
+          ai.models.generateContent({
             model: AI_MODEL_NAME,
-            instructions: AI_SYSTEM_INSTRUCTION,
-            input: inputMessages,
-            ...AI_GENERATION_CONFIG,
+            contents: historyParts,
+            config: geminiConfig,
           }),
-          OPENAI_CALL_TIMEOUT_MS,
+          GEMINI_CALL_TIMEOUT_MS,
         );
 
-        const text = response.output_text ?? '';
+        const res = result as {
+          text?: string;
+          candidates?: Array<{
+            content?: { parts?: Array<{ text?: string }> };
+          }>;
+        };
+        const text =
+          typeof res?.text === 'string'
+            ? res.text
+            : (res?.candidates?.[0]?.content?.parts?.[0]?.text ?? '');
 
         if (persist) {
           const conversationId = await persistConversation(
@@ -368,7 +382,7 @@ export async function POST(req: NextRequest) {
           const delay = Math.floor(expDelay + jitter);
           // eslint-disable-next-line no-console
           console.warn(
-            `[api/chat] Attempt ${attempt + 1}/${maxRetries + 1} (${err?.message}), retry after ${Math.round(delay / 1000)}s`,
+            `[api/chat] Gemini attempt ${attempt + 1}/${maxRetries + 1} (${err?.message}), retry after ${Math.round(delay / 1000)}s`,
           );
           await new Promise((r) => setTimeout(r, delay));
           continue;
