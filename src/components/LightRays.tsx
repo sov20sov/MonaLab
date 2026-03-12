@@ -113,14 +113,6 @@ const LightRays: React.FC<LightRaysProps> = ({
     };
   }, []);
 
-  if (skipWebGL) {
-    return (
-      <div
-        className={`w-full h-full pointer-events-none z-[3] overflow-hidden relative bg-gradient-to-b from-blue-500/10 via-transparent to-transparent ${className}`.trim()}
-      />
-    );
-  }
-
   const containerRef = useRef<HTMLDivElement>(null);
   const uniformsRef = useRef<Uniforms | null>(null);
   const rendererRef = useRef<Renderer | null>(null);
@@ -154,7 +146,7 @@ const LightRays: React.FC<LightRaysProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!isVisible || !containerRef.current) return;
+    if (skipWebGL || !isVisible || !containerRef.current) return;
 
     if (cleanupFunctionRef.current) {
       cleanupFunctionRef.current();
@@ -414,6 +406,7 @@ void main() {
     mouseInfluence,
     noiseAmount,
     distortion,
+    skipWebGL,
   ]);
 
   useEffect(() => {
@@ -470,7 +463,11 @@ void main() {
   return (
     <div
       ref={containerRef}
-      className={`w-full h-full pointer-events-none z-[3] overflow-hidden relative ${className}`.trim()}
+      className={`w-full h-full pointer-events-none z-[3] overflow-hidden relative ${
+        skipWebGL
+          ? 'bg-gradient-to-b from-blue-500/10 via-transparent to-transparent'
+          : ''
+      } ${className}`.trim()}
     />
   );
 };
