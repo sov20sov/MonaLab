@@ -114,7 +114,8 @@ export const maxDuration = 60;
 
 const MAX_MESSAGES = 20;
 const MAX_CONTENT_LENGTH = 50_000;
-const NVIDIA_CALL_TIMEOUT_MS = 50_000;
+// نقلل المهلة حتى لا يتجاوز التنفيذ حدود Vercel (حوالي 10 ثوانٍ)
+const NVIDIA_CALL_TIMEOUT_MS = 9_000;
 const KEEP_ALIVE_INTERVAL_MS = 8_000;
 
 export async function POST(req: NextRequest) {
@@ -265,8 +266,18 @@ export async function POST(req: NextRequest) {
         ? 504
         : 500;
 
+    const detail =
+      typeof error?.message === 'string'
+        ? error.message
+        : typeof error?.toString === 'function'
+          ? error.toString()
+          : null;
+
     return NextResponse.json(
-      { error: humanizeError(error) },
+      {
+        error: humanizeError(error),
+        ...(detail && { detail }),
+      },
       { status: statusCode },
     );
   }
