@@ -197,7 +197,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
           typeof data?.error === 'string'
             ? data.error
             : response.status === 429
-              ? 'وصل حد الطلبات المجاني لـ Gemini. انتظر دقيقة ثم استخدم زر «إعادة المحاولة» (إعادة محاولة تلقائية خلال 60 ثانية).'
+              ? 'وصل حد الطلبات. انتظر دقيقة ثم استخدم زر «إعادة المحاولة» (إعادة محاولة تلقائية خلال 60 ثانية).'
               : 'فشل الاتصال بالخادم. يرجى المحاولة لاحقاً.';
         if (typeof data?.detail === 'string' && data.detail) {
           serverMessage += ` (${data.detail})`;
@@ -326,7 +326,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
   };
   handleRetryRef.current = handleRetry;
 
-  // إعادة محاولة تلقائية بعد 60 ثانية عند ظهور خطأ (مثل 429) — حصة Gemini تُحدّث كل دقيقة
+  // إعادة محاولة تلقائية بعد 60 ثانية عند ظهور خطأ (مثل 429)
   useEffect(() => {
     if (!lastErrorMessageId || !lastFailedMessagesRef.current) return;
     const t = setTimeout(() => {

@@ -1,12 +1,11 @@
 import 'dotenv/config';
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenAI } from '@google/genai';
+import OpenAI from 'openai';
 import {
   AI_MODEL_NAME,
   AI_SYSTEM_INSTRUCTION,
   AI_GENERATION_CONFIG,
 } from '../../../src/config/aiConfig';
-import { callNvidiaChat } from '../../../src/lib/nvidiaChat';
 import { prisma } from '../../../src/lib/prisma';
 
 type ChatRole = 'user' | 'model';
@@ -59,7 +58,7 @@ function is429Error(err: any): boolean {
     err?.message?.includes?.('Too Many Requests') ||
     err?.message?.includes?.('quota') ||
     err?.message?.includes?.('rate') ||
-    err?.code === 'RESOURCE_EXHAUSTED'
+    err?.code === 'rate_limit_exceeded'
   );
 }
 
@@ -111,23 +110,18 @@ export const maxDuration = 60;
 
 const MAX_MESSAGES = 20;
 const MAX_CONTENT_LENGTH = 50_000;
-const GEMINI_CALL_TIMEOUT_MS = 50_000;
+const OPENAI_CALL_TIMEOUT_MS = 50_000;
 const KEEP_ALIVE_INTERVAL_MS = 8_000;
 
 export async function POST(req: NextRequest) {
   try {
-    const geminiKey = (
-      process.env.GEMINI_API_KEY ??
-      process.env.GOOGLE_API_KEY ??
-      ''
-    ).trim();
-    const nvidiaKey = (process.env.Nivedi_api_key ?? '').trim();
+    const openaiKey = (process.env.OPENAI_API_KEY ?? '').trim();
 
-    if (!geminiKey && !nvidiaKey) {
+    if (!openaiKey) {
       return NextResponse.json(
         {
           error:
-            'أضف GEMINI_API_KEY أو Nivedi_api_key في .env أو .env.local ثم أعد تشغيل السيرفر.',
+            'أضف OPENAI_API_KEY في .env أو .env.local ثم أعد تشغيل السيرفر.',
         },
         { status: 500 },
       );
@@ -197,216 +191,160 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const historyParts = trimmed.map((m) => ({
-      role: m.role === 'user' ? 'user' : 'model',
-      parts: [{ text: m.content }],
-    }));
+    const client = new OpenAI({ apiKey: openaiKey });
 
-    const geminiConfig = {
-      systemInstruction: AI_SYSTEM_INSTRUCTION,
-      ...AI_GENERATION_CONFIG,
-    };
+    const inputMessages = trimmed.map((m) => ({
+      role: (m.role === 'user' ? 'user' : 'assistant') as
+        | 'user'
+        | 'assistant',
+      content: m.content,
+    }));
 
     let lastError: any;
 
-    /* ── Gemini ── */
-    if (geminiKey) {
-      const ai = new GoogleGenAI({ apiKey: geminiKey });
+    /* ── Streaming path ── */
+    if (wantStream) {
+      try {
+        const stream = await client.responses.create({
+          model: AI_MODEL_NAME,
+          instructions: AI_SYSTEM_INSTRUCTION,
+          input: inputMessages,
+          stream: true,
+          ...AI_GENERATION_CONFIG,
+        });
 
-      /* streaming path */
-      if (wantStream) {
-        try {
-          const streamPromise = ai.models.generateContentStream({
-            model: AI_MODEL_NAME,
-            contents: historyParts,
-            config: geminiConfig,
-          });
+        let fullContent = '';
+        const encoder = new TextEncoder();
 
-          let fullContent = '';
-          const encoder = new TextEncoder();
-
-          const readable = new ReadableStream({
-            async start(controller) {
-              const ping = (obj: Record<string, unknown>) => {
-                try {
-                  controller.enqueue(
-                    encoder.encode(JSON.stringify(obj) + '\n'),
-                  );
-                } catch {
-                  /* controller closed */
-                }
-              };
-
-              // Immediate heartbeat to flush headers and prevent proxy 504
-              ping({ heartbeat: true });
-
-              // Keep-alive: send pings while waiting for Gemini's first chunk
-              const keepAliveId = setInterval(
-                () => ping({ heartbeat: true }),
-                KEEP_ALIVE_INTERVAL_MS,
-              );
-
+        const readable = new ReadableStream({
+          async start(controller) {
+            const ping = (obj: Record<string, unknown>) => {
               try {
-                for await (const chunk of await streamPromise) {
+                controller.enqueue(
+                  encoder.encode(JSON.stringify(obj) + '\n'),
+                );
+              } catch {
+                /* controller closed */
+              }
+            };
+
+            ping({ heartbeat: true });
+
+            const keepAliveId = setInterval(
+              () => ping({ heartbeat: true }),
+              KEEP_ALIVE_INTERVAL_MS,
+            );
+
+            try {
+              for await (const event of stream) {
+                if (event.type === 'response.output_text.delta') {
                   clearInterval(keepAliveId);
-                  const res = chunk as {
-                    text?: string;
-                    candidates?: Array<{
-                      content?: {
-                        parts?: Array<{ text?: string }>;
-                      };
-                    }>;
-                  };
-                  const part =
-                    typeof res?.text === 'string'
-                      ? res.text
-                      : (res?.candidates?.[0]?.content?.parts?.[0]?.text ??
-                        '');
+                  const part = event.delta;
                   if (part) {
                     fullContent += part;
                     ping({ delta: part });
                   }
                 }
-
-                let conversationId: string | undefined;
-                if (persist) {
-                  conversationId = await persistConversation(
-                    trimmed,
-                    fullContent,
-                    conversationTitle,
-                    userId,
-                  );
-                }
-
-                ping({ done: true, content: fullContent, conversationId });
-              } catch (e: any) {
-                clearInterval(keepAliveId);
-                ping({
-                  error: e?.message ?? 'خطأ أثناء توليد الرد.',
-                });
-              } finally {
-                clearInterval(keepAliveId);
-                controller.close();
               }
-            },
-          });
 
-          return new Response(readable, {
-            headers: {
-              'Content-Type': 'application/x-ndjson',
-              'X-Accel-Buffering': 'no',
-              'Cache-Control': 'no-cache, no-transform',
-            },
-          });
-        } catch (streamErr: any) {
-          lastError = streamErr;
-          // eslint-disable-next-line no-console
-          console.warn(
-            '[api/chat] Streaming init failed, falling back to non-streaming:',
-            streamErr?.message,
-          );
-        }
-      }
+              clearInterval(keepAliveId);
 
-      /* non-streaming path (also fallback if streaming init threw) */
-      if (!wantStream || lastError) {
-        const maxRetries = 2;
-        const baseDelayMs = 3_000;
-        const maxDelayMs = 8_000;
-
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-          try {
-            const result = await withTimeout(
-              ai.models.generateContent({
-                model: AI_MODEL_NAME,
-                contents: historyParts,
-                config: geminiConfig,
-              }),
-              GEMINI_CALL_TIMEOUT_MS,
-            );
-
-            const res = result as {
-              text?: string;
-              candidates?: Array<{
-                content?: { parts?: Array<{ text?: string }> };
-              }>;
-            };
-            const text =
-              typeof res?.text === 'string'
-                ? res.text
-                : (res?.candidates?.[0]?.content?.parts?.[0]?.text ?? '');
-
-            if (persist) {
-              const conversationId = await persistConversation(
-                trimmed,
-                text,
-                conversationTitle,
-                userId,
-              );
-              if (conversationId) {
-                return NextResponse.json({
-                  content: text,
-                  conversationId,
-                });
+              let conversationId: string | undefined;
+              if (persist) {
+                conversationId = await persistConversation(
+                  trimmed,
+                  fullContent,
+                  conversationTitle,
+                  userId,
+                );
               }
-            }
 
-            return NextResponse.json({ content: text });
-          } catch (err: any) {
-            lastError = err;
-
-            if (
-              (is429Error(err) || err?.message === 'TIMEOUT') &&
-              attempt < maxRetries
-            ) {
-              const expDelay = Math.min(
-                baseDelayMs * Math.pow(2, attempt),
-                maxDelayMs,
-              );
-              const jitter = Math.random() * 2_000;
-              const delay = Math.floor(expDelay + jitter);
-              // eslint-disable-next-line no-console
-              console.warn(
-                `[api/chat] Gemini attempt ${attempt + 1}/${maxRetries + 1} (${err?.message}), retry after ${Math.round(delay / 1000)}s`,
-              );
-              await new Promise((r) => setTimeout(r, delay));
-              continue;
+              ping({ done: true, content: fullContent, conversationId });
+            } catch (e: any) {
+              clearInterval(keepAliveId);
+              ping({
+                error: e?.message ?? 'خطأ أثناء توليد الرد.',
+              });
+            } finally {
+              clearInterval(keepAliveId);
+              controller.close();
             }
-            break;
-          }
-        }
+          },
+        });
+
+        return new Response(readable, {
+          headers: {
+            'Content-Type': 'application/x-ndjson',
+            'X-Accel-Buffering': 'no',
+            'Cache-Control': 'no-cache, no-transform',
+          },
+        });
+      } catch (streamErr: any) {
+        lastError = streamErr;
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[api/chat] Streaming init failed, falling back to non-streaming:',
+          streamErr?.message,
+        );
       }
     }
 
-    /* ── NVIDIA fallback ── */
-    if (nvidiaKey) {
+    /* ── Non-streaming path (also fallback if streaming init threw) ── */
+    const maxRetries = 2;
+    const baseDelayMs = 3_000;
+    const maxDelayMs = 8_000;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const nvResult = await withTimeout(
-          callNvidiaChat(trimmed, nvidiaKey),
-          GEMINI_CALL_TIMEOUT_MS,
+        const response = await withTimeout(
+          client.responses.create({
+            model: AI_MODEL_NAME,
+            instructions: AI_SYSTEM_INSTRUCTION,
+            input: inputMessages,
+            ...AI_GENERATION_CONFIG,
+          }),
+          OPENAI_CALL_TIMEOUT_MS,
         );
-        if ('content' in nvResult) {
-          const text = nvResult.content;
-          if (persist) {
-            const conversationId = await persistConversation(
-              trimmed,
-              text,
-              conversationTitle,
-              userId,
-            );
-            if (conversationId) {
-              return NextResponse.json({ content: text, conversationId });
-            }
+
+        const text = response.output_text ?? '';
+
+        if (persist) {
+          const conversationId = await persistConversation(
+            trimmed,
+            text,
+            conversationTitle,
+            userId,
+          );
+          if (conversationId) {
+            return NextResponse.json({
+              content: text,
+              conversationId,
+            });
           }
-          return NextResponse.json({ content: text });
         }
-        // eslint-disable-next-line no-console
-        console.warn('[api/chat] NVIDIA fallback error:', nvResult.error);
-        lastError = new Error(nvResult.error);
-      } catch (nvErr: any) {
-        // eslint-disable-next-line no-console
-        console.warn('[api/chat] NVIDIA fallback threw:', nvErr?.message);
-        lastError = nvErr;
+
+        return NextResponse.json({ content: text });
+      } catch (err: any) {
+        lastError = err;
+
+        if (
+          (is429Error(err) || err?.message === 'TIMEOUT') &&
+          attempt < maxRetries
+        ) {
+          const expDelay = Math.min(
+            baseDelayMs * Math.pow(2, attempt),
+            maxDelayMs,
+          );
+          const jitter = Math.random() * 2_000;
+          const delay = Math.floor(expDelay + jitter);
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[api/chat] Attempt ${attempt + 1}/${maxRetries + 1} (${err?.message}), retry after ${Math.round(delay / 1000)}s`,
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        break;
       }
     }
 
@@ -415,7 +353,7 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line no-console
     console.error('[api/chat] Error:', error);
 
-    if (error?.status === 401 || error?.code === 'UNAUTHENTICATED') {
+    if (error?.status === 401 || error?.code === 'authentication_error') {
       return NextResponse.json(
         {
           error:
@@ -429,7 +367,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            'وصل حد الطلبات المجاني من Gemini. انتظر دقيقة ثم اضغط «إعادة المحاولة».',
+            'وصل حد الطلبات. انتظر دقيقة ثم اضغط «إعادة المحاولة».',
         },
         { status: 429 },
       );
