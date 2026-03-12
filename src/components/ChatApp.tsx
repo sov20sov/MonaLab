@@ -210,7 +210,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
     abortControllerRef.current = controller;
 
     const result = await sendMessagesToAPI(nextMessages, controller.signal, {
-      stream: true,
+      stream: supportsStreaming,
     });
     abortControllerRef.current = null;
 
@@ -260,7 +260,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
     setStreamingContent('');
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    const result = await sendMessagesToAPI(msgs, controller.signal, { stream: true });
+    const result = await sendMessagesToAPI(msgs, controller.signal, { stream: supportsStreaming });
     abortControllerRef.current = null;
     const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString());
     if (result.ok) {
