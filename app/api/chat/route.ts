@@ -24,28 +24,7 @@ function checkRateLimit(ip: string | null | undefined): {
   ok: boolean;
   retryAfterMs?: number;
 } {
-  if (process.env.NODE_ENV !== 'production') return { ok: true };
-
-  const key = ip || 'unknown';
-  const now = Date.now();
-  const current = rateStore.get(key);
-
-  if (!current) {
-    rateStore.set(key, { count: 1, windowStart: now });
-    return { ok: true };
-  }
-
-  const elapsed = now - current.windowStart;
-  if (elapsed > RATE_LIMIT_WINDOW_MS) {
-    rateStore.set(key, { count: 1, windowStart: now });
-    return { ok: true };
-  }
-
-  if (current.count >= RATE_LIMIT_MAX_REQUESTS) {
-    return { ok: false, retryAfterMs: RATE_LIMIT_WINDOW_MS - elapsed };
-  }
-
-  current.count += 1;
+  // تم إلغاء حد الطلبات لكل مستخدم حالياً
   return { ok: true };
 }
 
