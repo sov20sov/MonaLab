@@ -25,7 +25,7 @@ interface ChatSidebarProps {
   onToggleSessionsCollapsed(): void;
   onStartNewSession(): void;
   onSelectSession(sessionId: string): void;
-  sidebarRef: React.RefObject<HTMLDivElement>;
+  sidebarRef: React.RefObject<HTMLDivElement | null>;
 }
 
 export function ChatSidebar({
