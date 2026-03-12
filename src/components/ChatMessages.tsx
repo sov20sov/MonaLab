@@ -14,7 +14,7 @@ interface ChatMessagesProps {
   onRetry: () => void;
   exportToWord: (index: number) => void;
   exportToPDF: (index: number) => void;
-  messagesEndRef: RefObject<HTMLDivElement>;
+  messagesEndRef: RefObject<HTMLDivElement | null>;
 }
 
 const SHORT_REQUEST_MAX_LENGTH = 50;
