@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenAI } from '@google/genai';
+import { callNvidiaChat } from '../../../src/lib/nvidiaChat';
 import {
   AI_MODEL_NAME,
   AI_SYSTEM_INSTRUCTION,
@@ -114,22 +114,18 @@ export const maxDuration = 60;
 
 const MAX_MESSAGES = 20;
 const MAX_CONTENT_LENGTH = 50_000;
-const GEMINI_CALL_TIMEOUT_MS = 50_000;
+const NVIDIA_CALL_TIMEOUT_MS = 50_000;
 const KEEP_ALIVE_INTERVAL_MS = 8_000;
 
 export async function POST(req: NextRequest) {
   try {
-    const geminiKey = (
-      process.env.GEMINI_API_KEY ??
-      process.env.GOOGLE_API_KEY ??
-      ''
-    ).trim();
+    const nvidiaKey = (process.env.NVIDIA_API_KEY ?? '').trim();
 
-    if (!geminiKey) {
+    if (!nvidiaKey) {
       return NextResponse.json(
         {
           error:
-            'أضف GEMINI_API_KEY في .env أو .env.local ثم أعد تشغيل السيرفر.',
+            'أضف NVIDIA_API_KEY في .env أو .env.local ثم أعد تشغيل السيرفر.',
         },
         { status: 500 },
       );
@@ -199,136 +195,24 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const historyParts = trimmed.map((m) => ({
-      role: m.role === 'user' ? 'user' : 'model',
-      parts: [{ text: m.content }],
-    }));
-
-    const geminiConfig = {
-      systemInstruction: AI_SYSTEM_INSTRUCTION,
-      ...AI_GENERATION_CONFIG,
-    };
-
-    const ai = new GoogleGenAI({ apiKey: geminiKey });
-
-    let lastError: any;
-
-    if (wantStream) {
-      try {
-        const streamPromise = ai.models.generateContentStream({
-          model: AI_MODEL_NAME,
-          contents: historyParts,
-          config: geminiConfig,
-        });
-
-        let fullContent = '';
-        const encoder = new TextEncoder();
-
-        const readable = new ReadableStream({
-          async start(controller) {
-            const ping = (obj: Record<string, unknown>) => {
-              try {
-                controller.enqueue(
-                  encoder.encode(JSON.stringify(obj) + '\n'),
-                );
-              } catch {
-              }
-            };
-
-            ping({ heartbeat: true });
-
-            const keepAliveId = setInterval(
-              () => ping({ heartbeat: true }),
-              KEEP_ALIVE_INTERVAL_MS,
-            );
-
-            try {
-              for await (const chunk of await streamPromise) {
-                clearInterval(keepAliveId);
-                const res = chunk as {
-                  text?: string;
-                  candidates?: Array<{
-                    content?: {
-                      parts?: Array<{ text?: string }>;
-                    };
-                  }>;
-                };
-                const part =
-                  typeof res?.text === 'string'
-                    ? res.text
-                    : (res?.candidates?.[0]?.content?.parts?.[0]?.text ??
-                      '');
-                if (part) {
-                  fullContent += part;
-                  ping({ delta: part });
-                }
-              }
-
-              let conversationId: string | undefined;
-              if (persist) {
-                conversationId = await persistConversation(
-                  trimmed,
-                  fullContent,
-                  conversationTitle,
-                  userId,
-                );
-              }
-
-              ping({ done: true, content: fullContent, conversationId });
-            } catch (e: any) {
-              clearInterval(keepAliveId);
-              ping({
-                error: humanizeError(e),
-              });
-            } finally {
-              clearInterval(keepAliveId);
-              controller.close();
-            }
-          },
-        });
-
-        return new Response(readable, {
-          headers: {
-            'Content-Type': 'application/x-ndjson',
-            'X-Accel-Buffering': 'no',
-            'Cache-Control': 'no-cache, no-transform',
-          },
-        });
-      } catch (streamErr: any) {
-        lastError = streamErr;
-        // eslint-disable-next-line no-console
-        console.warn(
-          '[api/chat] Streaming init failed, falling back to non-streaming:',
-          streamErr?.message,
-        );
-      }
-    }
-
     const maxRetries = 2;
     const baseDelayMs = 3_000;
     const maxDelayMs = 8_000;
 
+    let lastError: any;
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const result = await withTimeout(
-          ai.models.generateContent({
-            model: AI_MODEL_NAME,
-            contents: historyParts,
-            config: geminiConfig,
-          }),
-          GEMINI_CALL_TIMEOUT_MS,
+          callNvidiaChat(trimmed, nvidiaKey),
+          NVIDIA_CALL_TIMEOUT_MS,
         );
 
-        const res = result as {
-          text?: string;
-          candidates?: Array<{
-            content?: { parts?: Array<{ text?: string }> };
-          }>;
-        };
-        const text =
-          typeof res?.text === 'string'
-            ? res.text
-            : (res?.candidates?.[0]?.content?.parts?.[0]?.text ?? '');
+        if ('error' in result) {
+          throw new Error(result.error);
+        }
+
+        const text = result.content;
 
         if (persist) {
           const conversationId = await persistConversation(
@@ -361,7 +245,7 @@ export async function POST(req: NextRequest) {
           const delay = Math.floor(expDelay + jitter);
           // eslint-disable-next-line no-console
           console.warn(
-            `[api/chat] Gemini attempt ${attempt + 1}/${maxRetries + 1} (${err?.message}), retry after ${Math.round(delay / 1000)}s`,
+            `[api/chat] NVIDIA attempt ${attempt + 1}/${maxRetries + 1} (${err?.message}), retry after ${Math.round(delay / 1000)}s`,
           );
           await new Promise((r) => setTimeout(r, delay));
           continue;
