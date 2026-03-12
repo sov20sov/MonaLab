@@ -48,6 +48,8 @@ function checkRateLimit(_ip: string | null | undefined): { ok: boolean; retryAft
   return { ok: true };
 }
 
+export const maxDuration = 60; // ثوانٍ — زيادة زمن تنفيذ الدالة على Vercel قدر الإمكان
+
 export async function POST(req: NextRequest) {
   try {
     const geminiKey = (

@@ -112,7 +112,9 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
         body: JSON.stringify({
           messages: messagesToSend.map((m) => ({ role: m.role, content: m.content })),
           userId: null,
-          ...(options?.persist && { persist: true, title: options.title || 'بحث جديد' }),
+          // في هذه المرحلة نعطّل الحفظ في قاعدة البيانات لتقليل زمن الاستجابة واحتمال الأخطاء
+          // يمكن إعادة تفعيل persist لاحقاً عند ثبات الخدمة
+          ...(options?.persist && false && { persist: true, title: options.title || 'بحث جديد' }),
           stream: options?.stream ?? true,
         }),
         signal,
@@ -215,7 +217,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
       ? (userMessage.content.slice(0, 60).trim() || 'بحث جديد')
       : (sessionTitle || 'بحث جديد');
     const result = await sendMessagesToAPI(nextMessages, controller.signal, {
-      persist: true,
+      persist: false,
       title: titleForApi,
       stream: true,
     });
@@ -268,7 +270,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const sessionTitle = sessions.find((s) => s.id === activeSessionId)?.title ?? 'بحث جديد';
-    const result = await sendMessagesToAPI(msgs, controller.signal, { persist: true, title: sessionTitle });
+    const result = await sendMessagesToAPI(msgs, controller.signal, { persist: false, title: sessionTitle });
     abortControllerRef.current = null;
     const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString());
     if (result.ok) {
