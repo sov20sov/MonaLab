@@ -171,20 +171,22 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
           return { ok: true, content: fullContent, streamed: true };
         }
 
-        // متصفح لا يدعم streaming: نقرأ النص كاملاً ثم نأخذ آخر سطر مكتمل
+        // متصفح لا يدعم streaming: نقرأ النص كاملاً ثم نبحث عن آخر سطر ذي معنى
         const raw = await response.text().catch(() => '');
         if (raw) {
           const lines = raw.split('\n').filter((l) => l.trim());
-          const last = lines[lines.length - 1];
-          if (last) {
+          for (let i = lines.length - 1; i >= 0; i--) {
             try {
-              const obj = JSON.parse(last) as { content?: string; error?: string };
+              const obj = JSON.parse(lines[i]) as { done?: boolean; content?: string; error?: string; heartbeat?: boolean };
+              if (obj.heartbeat) continue;
               if (obj.error) {
                 return { ok: false, error: obj.error };
               }
-              return { ok: true, content: obj.content ?? '', streamed: false };
+              if (obj.done === true || obj.content) {
+                return { ok: true, content: obj.content ?? '', streamed: false };
+              }
             } catch {
-              // نتجاهل الخطأ ونكمل لمسار JSON العادي بالأسفل
+              continue;
             }
           }
         }

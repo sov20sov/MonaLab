@@ -63,6 +63,15 @@ function is429Error(err: any): boolean {
   );
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('TIMEOUT')), ms),
+    ),
+  ]);
+}
+
 async function persistConversation(
   trimmed: ChatMessage[],
   aiContent: string,
@@ -102,6 +111,8 @@ export const maxDuration = 60;
 
 const MAX_MESSAGES = 20;
 const MAX_CONTENT_LENGTH = 50_000;
+const GEMINI_CALL_TIMEOUT_MS = 50_000;
+const KEEP_ALIVE_INTERVAL_MS = 8_000;
 
 export async function POST(req: NextRequest) {
   try {
@@ -201,14 +212,11 @@ export async function POST(req: NextRequest) {
     /* ── Gemini ── */
     if (geminiKey) {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
-      const maxRetries = 3;
-      const baseDelayMs = 4_000;
-      const maxDelayMs = 15_000;
 
       /* streaming path */
       if (wantStream) {
         try {
-          const streamResult = ai.models.generateContentStream({
+          const streamPromise = ai.models.generateContentStream({
             model: AI_MODEL_NAME,
             contents: historyParts,
             config: geminiConfig,
@@ -219,8 +227,28 @@ export async function POST(req: NextRequest) {
 
           const readable = new ReadableStream({
             async start(controller) {
+              const ping = (obj: Record<string, unknown>) => {
+                try {
+                  controller.enqueue(
+                    encoder.encode(JSON.stringify(obj) + '\n'),
+                  );
+                } catch {
+                  /* controller closed */
+                }
+              };
+
+              // Immediate heartbeat to flush headers and prevent proxy 504
+              ping({ heartbeat: true });
+
+              // Keep-alive: send pings while waiting for Gemini's first chunk
+              const keepAliveId = setInterval(
+                () => ping({ heartbeat: true }),
+                KEEP_ALIVE_INTERVAL_MS,
+              );
+
               try {
-                for await (const chunk of await streamResult) {
+                for await (const chunk of await streamPromise) {
+                  clearInterval(keepAliveId);
                   const res = chunk as {
                     text?: string;
                     candidates?: Array<{
@@ -236,11 +264,7 @@ export async function POST(req: NextRequest) {
                         '');
                   if (part) {
                     fullContent += part;
-                    controller.enqueue(
-                      encoder.encode(
-                        JSON.stringify({ delta: part }) + '\n',
-                      ),
-                    );
+                    ping({ delta: part });
                   }
                 }
 
@@ -254,51 +278,52 @@ export async function POST(req: NextRequest) {
                   );
                 }
 
-                controller.enqueue(
-                  encoder.encode(
-                    JSON.stringify({
-                      done: true,
-                      content: fullContent,
-                      conversationId,
-                    }) + '\n',
-                  ),
-                );
+                ping({ done: true, content: fullContent, conversationId });
               } catch (e: any) {
-                controller.enqueue(
-                  encoder.encode(
-                    JSON.stringify({
-                      error: e?.message ?? 'خطأ أثناء توليد الرد.',
-                    }) + '\n',
-                  ),
-                );
+                clearInterval(keepAliveId);
+                ping({
+                  error: e?.message ?? 'خطأ أثناء توليد الرد.',
+                });
               } finally {
+                clearInterval(keepAliveId);
                 controller.close();
               }
             },
           });
 
           return new Response(readable, {
-            headers: { 'Content-Type': 'application/x-ndjson' },
+            headers: {
+              'Content-Type': 'application/x-ndjson',
+              'X-Accel-Buffering': 'no',
+              'Cache-Control': 'no-cache, no-transform',
+            },
           });
         } catch (streamErr: any) {
           lastError = streamErr;
           // eslint-disable-next-line no-console
           console.warn(
-            '[api/chat] Streaming failed, falling back to non-streaming:',
+            '[api/chat] Streaming init failed, falling back to non-streaming:',
             streamErr?.message,
           );
         }
       }
 
-      /* non-streaming path (also fallback if streaming threw) */
+      /* non-streaming path (also fallback if streaming init threw) */
       if (!wantStream || lastError) {
+        const maxRetries = 2;
+        const baseDelayMs = 3_000;
+        const maxDelayMs = 8_000;
+
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
           try {
-            const result = await ai.models.generateContent({
-              model: AI_MODEL_NAME,
-              contents: historyParts,
-              config: geminiConfig,
-            });
+            const result = await withTimeout(
+              ai.models.generateContent({
+                model: AI_MODEL_NAME,
+                contents: historyParts,
+                config: geminiConfig,
+              }),
+              GEMINI_CALL_TIMEOUT_MS,
+            );
 
             const res = result as {
               text?: string;
@@ -330,16 +355,19 @@ export async function POST(req: NextRequest) {
           } catch (err: any) {
             lastError = err;
 
-            if (is429Error(err) && attempt < maxRetries) {
+            if (
+              (is429Error(err) || err?.message === 'TIMEOUT') &&
+              attempt < maxRetries
+            ) {
               const expDelay = Math.min(
-                baseDelayMs * Math.pow(2, Math.min(attempt, 4)),
+                baseDelayMs * Math.pow(2, attempt),
                 maxDelayMs,
               );
-              const jitter = Math.random() * 3_000;
+              const jitter = Math.random() * 2_000;
               const delay = Math.floor(expDelay + jitter);
               // eslint-disable-next-line no-console
               console.warn(
-                `[api/chat] Gemini 429 attempt ${attempt + 1}/${maxRetries + 1}, retry after ${Math.round(delay / 1000)}s`,
+                `[api/chat] Gemini attempt ${attempt + 1}/${maxRetries + 1} (${err?.message}), retry after ${Math.round(delay / 1000)}s`,
               );
               await new Promise((r) => setTimeout(r, delay));
               continue;
@@ -352,25 +380,34 @@ export async function POST(req: NextRequest) {
 
     /* ── NVIDIA fallback ── */
     if (nvidiaKey) {
-      const nvResult = await callNvidiaChat(trimmed, nvidiaKey);
-      if ('content' in nvResult) {
-        const text = nvResult.content;
-        if (persist) {
-          const conversationId = await persistConversation(
-            trimmed,
-            text,
-            conversationTitle,
-            userId,
-          );
-          if (conversationId) {
-            return NextResponse.json({ content: text, conversationId });
+      try {
+        const nvResult = await withTimeout(
+          callNvidiaChat(trimmed, nvidiaKey),
+          GEMINI_CALL_TIMEOUT_MS,
+        );
+        if ('content' in nvResult) {
+          const text = nvResult.content;
+          if (persist) {
+            const conversationId = await persistConversation(
+              trimmed,
+              text,
+              conversationTitle,
+              userId,
+            );
+            if (conversationId) {
+              return NextResponse.json({ content: text, conversationId });
+            }
           }
+          return NextResponse.json({ content: text });
         }
-        return NextResponse.json({ content: text });
+        // eslint-disable-next-line no-console
+        console.warn('[api/chat] NVIDIA fallback error:', nvResult.error);
+        lastError = new Error(nvResult.error);
+      } catch (nvErr: any) {
+        // eslint-disable-next-line no-console
+        console.warn('[api/chat] NVIDIA fallback threw:', nvErr?.message);
+        lastError = nvErr;
       }
-      // eslint-disable-next-line no-console
-      console.warn('[api/chat] NVIDIA fallback error:', nvResult.error);
-      lastError = new Error(nvResult.error);
     }
 
     throw lastError ?? new Error('لا يوجد مزوّد ذكاء اصطناعي متاح.');
@@ -395,6 +432,16 @@ export async function POST(req: NextRequest) {
             'وصل حد الطلبات المجاني من Gemini. انتظر دقيقة ثم اضغط «إعادة المحاولة».',
         },
         { status: 429 },
+      );
+    }
+
+    if (error?.message === 'TIMEOUT') {
+      return NextResponse.json(
+        {
+          error:
+            'انتهت مهلة الاتصال بخدمة الذكاء الاصطناعي. الرجاء المحاولة مجدداً.',
+        },
+        { status: 504 },
       );
     }
 
