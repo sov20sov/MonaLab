@@ -17,7 +17,7 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSessionsCollapsed, setIsSessionsCollapsed] = useState(false);
   const [lastErrorMessageId, setLastErrorMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
