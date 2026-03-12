@@ -29,10 +29,9 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [pendingRequestLength, setPendingRequestLength] = useState(0);
 
-  // نتحقق من دعم المتصفح للـ streaming عبر fetch قبل تفعيله
+  // نتحقق من دعم المتصفح للـ streaming (على المتصفح فقط، وليس أثناء الـ prerender على الخادم)
   const supportsStreaming =
-    typeof ReadableStream !== 'undefined' &&
-    typeof (Response.prototype as any).body?.getReader === 'function';
+    typeof window !== 'undefined' && typeof ReadableStream !== 'undefined';
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -122,40 +121,61 @@ export default function ChatApp({ onBack, initialPrompt }: ChatAppProps) {
         signal,
       });
       const contentType = response.headers.get('content-type') ?? '';
-      if (contentType.includes('ndjson') && response.body) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let fullContent = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-          for (const line of lines) {
-            if (!line.trim()) continue;
+      if (contentType.includes('ndjson')) {
+        // مسار الـ streaming عندما يدعم المتصفح body.getReader
+        if (response.body && supportsStreaming && 'getReader' in response.body) {
+          const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let fullContent = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const obj = JSON.parse(line) as { delta?: string; done?: boolean; content?: string; conversationId?: string; error?: string };
+                if (obj.error) {
+                  setStreamingContent(null);
+                  return { ok: false, error: obj.error };
+                }
+                if (typeof obj.delta === 'string') {
+                  fullContent += obj.delta;
+                  setStreamingContent(fullContent);
+                }
+                if (obj.done === true) {
+                  setStreamingContent(null);
+                  return { ok: true, content: obj.content ?? fullContent, conversationId: obj.conversationId, streamed: true };
+                }
+              } catch (_) {
+                // ignore parse errors for partial lines
+              }
+            }
+          }
+          setStreamingContent(null);
+          return { ok: true, content: fullContent, streamed: true };
+        }
+
+        // متصفح لا يدعم streaming: نقرأ النص كاملاً ثم نأخذ آخر سطر مكتمل
+        const raw = await response.text().catch(() => '');
+        if (raw) {
+          const lines = raw.split('\n').filter((l) => l.trim());
+          const last = lines[lines.length - 1];
+          if (last) {
             try {
-              const obj = JSON.parse(line) as { delta?: string; done?: boolean; content?: string; conversationId?: string; error?: string };
+              const obj = JSON.parse(last) as { content?: string; error?: string };
               if (obj.error) {
-                setStreamingContent(null);
                 return { ok: false, error: obj.error };
               }
-              if (typeof obj.delta === 'string') {
-                fullContent += obj.delta;
-                setStreamingContent(fullContent);
-              }
-              if (obj.done === true) {
-                setStreamingContent(null);
-                return { ok: true, content: obj.content ?? fullContent, conversationId: obj.conversationId, streamed: true };
-              }
-            } catch (_) {
-              // ignore parse errors for partial lines
+              return { ok: true, content: obj.content ?? '', streamed: false };
+            } catch {
+              // نتجاهل الخطأ ونكمل لمسار JSON العادي بالأسفل
             }
           }
         }
-        setStreamingContent(null);
-        return { ok: true, content: fullContent, streamed: true };
       }
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
