@@ -253,34 +253,74 @@ export function sanitizeReportMarkdown(md: string): string {
 }
 
 async function downloadPdfFromServer(params: { html: string; filename: string }): Promise<void> {
-  const res = await fetch("/api/export/pdf", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ html: params.html, filename: params.filename }),
-  });
-  const contentType = (res.headers.get("content-type") || "").toLowerCase();
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(txt || "PDF export failed");
+  try {
+    const res = await fetch("/api/export/pdf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html: params.html, filename: params.filename }),
+    });
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(txt || "PDF export failed");
+    }
+    if (!contentType.includes("application/pdf")) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(txt || "Server did not return a valid PDF file.");
+    }
+
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length < 5) {
+      throw new Error("Downloaded PDF is empty.");
+    }
+    // PDF files must start with: %PDF-
+    const pdfSignature =
+      bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
+    if (!pdfSignature) {
+      throw new Error("Downloaded file is not a valid PDF.");
+    }
+
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    saveAs(blob, params.filename);
+  } catch {
+    // Vercel may not expose /api/export/pdf in static deployments.
+    // Fallback to browser-side generation so export still works for end users.
+    await downloadPdfInBrowser(params.html, params.filename);
   }
-  if (!contentType.includes("application/pdf")) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(txt || "Server did not return a valid PDF file.");
+}
+
+async function downloadPdfInBrowser(html: string, filename: string): Promise<void> {
+  if (typeof window === "undefined") {
+    throw new Error("PDF export is only available in browser context.");
   }
 
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  if (bytes.length < 5) {
-    throw new Error("Downloaded PDF is empty.");
-  }
-  // PDF files must start with: %PDF-
-  const pdfSignature =
-    bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
-  if (!pdfSignature) {
-    throw new Error("Downloaded file is not a valid PDF.");
-  }
+  const html2pdfModule: any = await import("html2pdf.js");
+  const html2pdf = html2pdfModule?.default ?? html2pdfModule;
 
-  const blob = new Blob([bytes], { type: "application/pdf" });
-  saveAs(blob, params.filename);
+  const container = document.createElement("div");
+  container.style.position = "fixed";
+  container.style.left = "-100000px";
+  container.style.top = "0";
+  container.style.width = "210mm";
+  container.style.background = "#ffffff";
+  container.innerHTML = html;
+  document.body.appendChild(container);
+
+  try {
+    await html2pdf()
+      .set({
+        margin: [10, 8, 10, 8],
+        filename,
+        image: { type: "jpeg", quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+        pagebreak: { mode: ["css", "legacy"] },
+      })
+      .from(container)
+      .save();
+  } finally {
+    container.remove();
+  }
 }
 
 // ─── محوّل HTML → عناصر Word ──────────────────────────────────────────────────
