@@ -335,20 +335,60 @@ async function downloadPdfInBrowser(html: string, filename: string): Promise<voi
     }
   };
 
+  const cleaned = html
+    .replace(/oklch\([^)]*\)/gi, "#111827")
+    .replace(/oklab\([^)]*\)/gi, "#111827")
+    .replace(/color-mix\([^)]*\)/gi, "#111827")
+    .replace(/var\([^)]*\)/gi, "#111827");
+
   try {
-    await runHtml2Pdf(html);
-  } catch (err) {
-    // html2canvas does not support some modern color functions (oklch/color-mix).
-    // Replace them with safe fallbacks and retry once.
-    const cleaned = html
-      .replace(/oklch\([^)]*\)/gi, "#111827")
-      .replace(/oklab\([^)]*\)/gi, "#111827")
-      .replace(/color-mix\([^)]*\)/gi, "#111827");
     await runHtml2Pdf(cleaned);
-    if (err) {
-      // no-op: preserve successful retry behavior
-    }
+  } catch {
+    // Last-resort fallback: generate a plain-text PDF to guarantee download.
+    await downloadPlainPdfFromHtml(cleaned, filename);
   }
+}
+
+async function downloadPlainPdfFromHtml(html: string, filename: string): Promise<void> {
+  const { jsPDF } = await import("jspdf");
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  const title = (doc.querySelector("title")?.textContent || "Report").trim();
+  const text = (doc.body?.textContent || "").replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const margin = 12;
+  const maxWidth = pageWidth - margin * 2;
+  let y = margin;
+
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(14);
+  const titleLines = pdf.splitTextToSize(title, maxWidth);
+  for (const line of titleLines) {
+    if (y > pageHeight - margin) {
+      pdf.addPage();
+      y = margin;
+    }
+    pdf.text(String(line), margin, y);
+    y += 7;
+  }
+
+  y += 2;
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(11);
+  const lines = pdf.splitTextToSize(text || "Report", maxWidth);
+  for (const line of lines) {
+    if (y > pageHeight - margin) {
+      pdf.addPage();
+      y = margin;
+    }
+    pdf.text(String(line), margin, y);
+    y += 5.5;
+  }
+
+  pdf.save(filename);
 }
 
 // ─── محوّل HTML → عناصر Word ──────────────────────────────────────────────────
