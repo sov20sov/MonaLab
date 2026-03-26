@@ -21,7 +21,6 @@ export default async function handler(req: any, res: any) {
     }
 
     const safeName = String(filename || "MonaLab_Report.pdf").replace(/[\\/:*?"<>|]/g, "_");
-    const htmlForPdf = html.replace(/@import\s+url\((['"]?)https?:\/\/[^)]+\1\)\s*;?/gi, "");
 
     const browser = await puppeteer.launch({
       args: [...chromium.args, "--no-sandbox", "--disable-setuid-sandbox"],
@@ -34,8 +33,14 @@ export default async function handler(req: any, res: any) {
       const page = await browser.newPage();
       page.setDefaultNavigationTimeout(60000);
       page.setDefaultTimeout(60000);
-      await page.setContent(htmlForPdf, { waitUntil: "domcontentloaded", timeout: 60000 });
-      await new Promise((r) => setTimeout(r, 250));
+      await page.setContent(html, { waitUntil: "networkidle0", timeout: 60000 });
+      await page.evaluate(async () => {
+        // Ensure web fonts (especially Arabic) are loaded before snapshotting.
+        if (document.fonts?.ready) {
+          await document.fonts.ready;
+        }
+      });
+      await new Promise((r) => setTimeout(r, 500));
       await page.emulateMediaType("print");
 
       const pdf = await page.pdf({

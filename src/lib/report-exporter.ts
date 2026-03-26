@@ -1133,7 +1133,7 @@ export async function downloadReportWordWithOptions(params: {
 // ─── CSS للـ PDF ──────────────────────────────────────────────────────────────
 function reportPdfCss(): string {
   return `
-    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=Inter:wght@400;600;700;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;600;700&family=Cairo:wght@400;600;700;800&family=Inter:wght@400;600;700;800&display=swap');
     :root {
       --ink: #111827; --muted: #6b7280; --line: #e5e7eb;
       --accent: #3730a3; --soft: #f8fafc; --soft2: #f1f5f9;
@@ -1141,7 +1141,7 @@ function reportPdfCss(): string {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background: #fff; color: var(--ink);
-      font-family: Cairo, Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      font-family: "Noto Naskh Arabic", Cairo, Inter, "Segoe UI", Tahoma, Arial, sans-serif;
       direction: rtl; text-align: right; line-height: 1.9;
       font-size: 13px;
       -webkit-print-color-adjust: exact; print-color-adjust: exact;
