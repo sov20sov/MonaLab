@@ -344,8 +344,37 @@ async function downloadPdfInBrowser(html: string, filename: string): Promise<voi
   try {
     await runHtml2Pdf(cleaned);
   } catch {
-    // Last-resort fallback: open browser print to preserve Arabic text rendering.
-    await openPrintWindow(cleaned, filename.replace(/\.pdf$/i, ""));
+    // Last-resort fallback for PDF button:
+    // build a minimal, style-safe HTML document and force download via html2pdf.
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(cleaned, "text/html");
+    const title = (doc.querySelector("title")?.textContent || "Report").trim();
+    const body = (doc.body?.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+    const rtl = /[\u0600-\u06FF]/.test(body);
+    const minimalHtml = `<!doctype html>
+<html lang="${rtl ? "ar" : "en"}" dir="${rtl ? "rtl" : "ltr"}">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20mm 14mm;
+      color: #111827;
+      background: #ffffff;
+      font-family: Arial, Tahoma, sans-serif;
+      line-height: 1.9;
+      white-space: pre-wrap;
+      word-break: break-word;
+      direction: ${rtl ? "rtl" : "ltr"};
+      text-align: ${rtl ? "right" : "left"};
+    }
+    h1 { margin: 0 0 12mm; font-size: 24px; line-height: 1.4; }
+  </style>
+</head>
+<body><h1>${escapeHtml(title)}</h1>${escapeHtml(body || "Report")}</body>
+</html>`;
+    await runHtml2Pdf(minimalHtml);
   }
 }
 
