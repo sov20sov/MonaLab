@@ -21,3 +21,6 @@ coverage/
 *.pfx
 secrets.*
 credentials.*
+
+# Vercel local project settings
+.vercel/
