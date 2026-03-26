@@ -315,15 +315,15 @@ export default function Chat() {
                   </div>
 
                   {msg.role === 'model' && !msg.isStreaming && msg.content && (
-                    <div className="mt-1 flex flex-wrap items-center gap-1 px-2 sm:gap-2">
-                      <Button variant="ghost" size="sm" className="h-8 text-xs text-muted-foreground hover:text-foreground" onClick={() => handleCopy(msg.id, modelDisplay)}>
+                    <div className="mt-1 grid w-full grid-cols-2 gap-1.5 px-1.5 min-[390px]:grid-cols-4 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:gap-2 sm:px-2">
+                      <Button variant="ghost" size="sm" className="h-8 justify-center text-xs text-muted-foreground hover:text-foreground" onClick={() => handleCopy(msg.id, modelDisplay)}>
                         {copiedId === msg.id ? <Check className="ml-1.5 h-3.5 w-3.5 text-green-600" /> : <Copy className="ml-1.5 h-3.5 w-3.5" />}
                         {copiedId === msg.id ? 'تم النسخ' : 'نسخ'}
                       </Button>
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                        className="h-8 justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
                         onClick={() => {
                           setExportTarget({ kind: "word", markdown: msg.content });
                           setExportDialogOpen(true);
@@ -335,7 +335,7 @@ export default function Chat() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                        className="h-8 justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
                         onClick={() => {
                           setExportTarget({ kind: "pdf", markdown: msg.content });
                           setExportDialogOpen(true);
@@ -347,7 +347,7 @@ export default function Chat() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                        className="h-8 justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
                         onClick={() => {
                           setExportTarget({ kind: "print", markdown: msg.content });
                           setExportDialogOpen(true);

@@ -53,17 +53,17 @@ export function ExportCoverDialog({ open, initial, onClose, onConfirm, title }: 
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[100] flex items-end justify-center p-2 sm:items-center sm:p-4">
       <button
         type="button"
         className="absolute inset-0 bg-black/55 backdrop-blur-sm"
         onClick={onClose}
         aria-label="إغلاق"
       />
-      <div className="relative w-full max-w-lg rounded-3xl border border-border bg-background/95 shadow-2xl">
-        <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
+      <div className="relative flex w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-border bg-background/95 shadow-2xl max-sm:max-h-[92dvh] sm:max-h-[88vh]">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3.5 sm:px-5 sm:py-4">
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-foreground">بيانات الغلاف والتنسيق</p>
+            <p className="text-sm font-semibold text-foreground sm:text-base">بيانات الغلاف والتنسيق</p>
             <p className="text-xs text-muted-foreground truncate">
               {title ?? "اختر ما تريد تضمينه داخل الملف النهائي"}
             </p>
@@ -73,7 +73,7 @@ export function ExportCoverDialog({ open, initial, onClose, onConfirm, title }: 
           </Button>
         </div>
 
-        <div className="px-5 py-4">
+        <div className="overflow-y-auto px-4 py-3 sm:px-5 sm:py-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5 sm:col-span-2">
               <Label>عنوان التقرير</Label>
@@ -134,7 +134,7 @@ export function ExportCoverDialog({ open, initial, onClose, onConfirm, title }: 
             </div>
           </div>
 
-          <div className="mt-4 grid gap-3 rounded-2xl border border-border bg-muted/30 p-4 sm:grid-cols-2">
+          <div className="mt-4 grid gap-3 rounded-2xl border border-border bg-muted/30 p-3.5 sm:grid-cols-2 sm:p-4">
             <div className="space-y-1.5">
               <Label>اللغة</Label>
               <select
@@ -177,11 +177,11 @@ export function ExportCoverDialog({ open, initial, onClose, onConfirm, title }: 
           </div>
         </div>
 
-        <div className="flex flex-col-reverse gap-2 border-t border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-end">
-          <Button variant="outline" className="rounded-full" onClick={onClose}>
+        <div className="flex flex-col-reverse gap-2 border-t border-border bg-background/95 px-4 py-3 sm:flex-row sm:items-center sm:justify-end sm:px-5 sm:py-4">
+          <Button variant="outline" className="h-10 rounded-full max-sm:w-full" onClick={onClose}>
             إلغاء
           </Button>
-          <Button className="rounded-full" onClick={confirm}>
+          <Button className="h-10 rounded-full max-sm:w-full" onClick={confirm}>
             تصدير
           </Button>
         </div>
