@@ -296,30 +296,58 @@ async function downloadPdfInBrowser(html: string, filename: string): Promise<voi
 
   const html2pdfModule: any = await import("html2pdf.js");
   const html2pdf = html2pdfModule?.default ?? html2pdfModule;
+  const runHtml2Pdf = async (docHtml: string): Promise<void> => {
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.left = "-100000px";
+    iframe.style.top = "0";
+    iframe.style.width = "1200px";
+    iframe.style.height = "1800px";
+    iframe.style.opacity = "0";
+    document.body.appendChild(iframe);
 
-  const container = document.createElement("div");
-  container.style.position = "fixed";
-  container.style.left = "-100000px";
-  container.style.top = "0";
-  container.style.width = "210mm";
-  container.style.background = "#ffffff";
-  container.innerHTML = html;
-  document.body.appendChild(container);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error("Timed out while preparing PDF content.")), 8000);
+        iframe.onload = () => {
+          window.clearTimeout(timeout);
+          resolve();
+        };
+        iframe.srcdoc = docHtml;
+      });
+
+      const target = iframe.contentDocument?.body;
+      if (!target) throw new Error("Unable to prepare PDF document body.");
+
+      await html2pdf()
+        .set({
+          margin: [10, 8, 10, 8],
+          filename,
+          image: { type: "jpeg", quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+          pagebreak: { mode: ["css", "legacy"] },
+        })
+        .from(target)
+        .save();
+    } finally {
+      iframe.remove();
+    }
+  };
 
   try {
-    await html2pdf()
-      .set({
-        margin: [10, 8, 10, 8],
-        filename,
-        image: { type: "jpeg", quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
-        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-        pagebreak: { mode: ["css", "legacy"] },
-      })
-      .from(container)
-      .save();
-  } finally {
-    container.remove();
+    await runHtml2Pdf(html);
+  } catch (err) {
+    // html2canvas does not support some modern color functions (oklch/color-mix).
+    // Replace them with safe fallbacks and retry once.
+    const cleaned = html
+      .replace(/oklch\([^)]*\)/gi, "#111827")
+      .replace(/oklab\([^)]*\)/gi, "#111827")
+      .replace(/color-mix\([^)]*\)/gi, "#111827");
+    await runHtml2Pdf(cleaned);
+    if (err) {
+      // no-op: preserve successful retry behavior
+    }
   }
 }
 
