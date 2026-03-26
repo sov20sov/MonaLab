@@ -344,51 +344,9 @@ async function downloadPdfInBrowser(html: string, filename: string): Promise<voi
   try {
     await runHtml2Pdf(cleaned);
   } catch {
-    // Last-resort fallback: generate a plain-text PDF to guarantee download.
-    await downloadPlainPdfFromHtml(cleaned, filename);
+    // Last-resort fallback: open browser print to preserve Arabic text rendering.
+    await openPrintWindow(cleaned, filename.replace(/\.pdf$/i, ""));
   }
-}
-
-async function downloadPlainPdfFromHtml(html: string, filename: string): Promise<void> {
-  const { jsPDF } = await import("jspdf");
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, "text/html");
-  const title = (doc.querySelector("title")?.textContent || "Report").trim();
-  const text = (doc.body?.textContent || "").replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-
-  const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 12;
-  const maxWidth = pageWidth - margin * 2;
-  let y = margin;
-
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(14);
-  const titleLines = pdf.splitTextToSize(title, maxWidth);
-  for (const line of titleLines) {
-    if (y > pageHeight - margin) {
-      pdf.addPage();
-      y = margin;
-    }
-    pdf.text(String(line), margin, y);
-    y += 7;
-  }
-
-  y += 2;
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(11);
-  const lines = pdf.splitTextToSize(text || "Report", maxWidth);
-  for (const line of lines) {
-    if (y > pageHeight - margin) {
-      pdf.addPage();
-      y = margin;
-    }
-    pdf.text(String(line), margin, y);
-    y += 5.5;
-  }
-
-  pdf.save(filename);
 }
 
 // ─── محوّل HTML → عناصر Word ──────────────────────────────────────────────────
