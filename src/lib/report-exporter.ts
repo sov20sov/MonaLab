@@ -219,6 +219,32 @@ function sanitizeEditorHtmlForExport(html: string): string {
     .replace(/javascript:/gi, "");
 }
 
+function normalizeHtmlForPdf(html: string): string {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div id="__pdf_root__">${html}</div>`, "text/html");
+    const root = doc.getElementById("__pdf_root__");
+    if (!root) return html;
+
+    // Strip style/class attributes that can carry app theme colors (including dark mode)
+    // and cause low-contrast text in generated PDF.
+    const all = root.querySelectorAll("*");
+    all.forEach((el) => {
+      el.removeAttribute("style");
+      el.removeAttribute("class");
+      // Keep IDs for ToC anchors and internal links.
+      if (el.tagName.toLowerCase() !== "a") {
+        el.removeAttribute("target");
+        el.removeAttribute("rel");
+      }
+    });
+
+    return root.innerHTML;
+  } catch {
+    return html;
+  }
+}
+
 function currentDateAr(): string {
   return new Date().toLocaleString("ar-SA", { dateStyle: "long", timeStyle: "short" });
 }
@@ -1257,7 +1283,7 @@ function reportPdfCss(): string {
 }
 
 function buildExportHtml(title: string, htmlBody: string, options?: ExportOptions): string {
-  const safe = sanitizeEditorHtmlForExport(htmlBody);
+  const safe = normalizeHtmlForPdf(sanitizeEditorHtmlForExport(htmlBody));
   const langBase = resolveExportOptions(options, {
     title: title || "Report",
     subtitle: REPORT_SUBTITLE,
