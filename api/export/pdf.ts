@@ -1,4 +1,9 @@
-import puppeteer from "puppeteer";
+import chromium from "@sparticuz/chromium";
+import puppeteer from "puppeteer-core";
+
+export const config = {
+  runtime: "nodejs",
+};
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
@@ -19,8 +24,10 @@ export default async function handler(req: any, res: any) {
     const htmlForPdf = html.replace(/@import\s+url\((['"]?)https?:\/\/[^)]+\1\)\s*;?/gi, "");
 
     const browser = await puppeteer.launch({
+      args: [...chromium.args, "--no-sandbox", "--disable-setuid-sandbox"],
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
     try {
