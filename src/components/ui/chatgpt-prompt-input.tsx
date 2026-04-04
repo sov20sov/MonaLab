@@ -2,6 +2,8 @@ import * as React from "react";
 import { Plus, Mic, ArrowUp, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import type { AssistantUILang } from "@/lib/assistant-i18n";
+import { promptInputChromeCopy } from "@/lib/assistant-i18n";
 
 export type ChatPromptVariant = "welcome" | "conversation";
 
@@ -13,6 +15,8 @@ export interface ChatGPTPromptInputProps {
   placeholder?: string;
   className?: string;
   variant?: ChatPromptVariant;
+  /** لغة واجهة الإدخال والتعرف الصوتي (ar-SA / en-US) */
+  locale?: AssistantUILang;
   quickSuggestion?: {
     label: string;
     onClick: () => void;
@@ -28,16 +32,25 @@ export function ChatGPTPromptInput({
   placeholder = "Message ChatGPT...",
   className,
   variant = "welcome",
+  locale = "ar",
   quickSuggestion,
 }: ChatGPTPromptInputProps) {
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const isConversation = variant === "conversation";
   const [isRecording, setIsRecording] = React.useState(false);
-  const recognitionRef = React.useRef<{
+  type RecognitionInstance = {
+    continuous: boolean;
+    interimResults: boolean;
+    lang: string;
     start: () => void;
     stop: () => void;
-  } | null>(null);
+    onresult: ((e: { results: { 0: { 0: { transcript: string } } } }) => void) | null;
+    onerror: (() => void) | null;
+    onend: (() => void) | null;
+  };
+  const recognitionRef = React.useRef<RecognitionInstance | null>(null);
   const valueRef = React.useRef(value);
+  const chrome = promptInputChromeCopy[locale];
 
   React.useEffect(() => {
     valueRef.current = value;
@@ -46,33 +59,15 @@ export function ChatGPTPromptInput({
   React.useEffect(() => {
     if (typeof window === "undefined") return;
     const Win = window as unknown as {
-      SpeechRecognition?: new () => {
-        continuous: boolean;
-        interimResults: boolean;
-        lang: string;
-        start: () => void;
-        stop: () => void;
-        onresult: ((e: { results: { 0: { 0: { transcript: string } } } }) => void) | null;
-        onerror: (() => void) | null;
-        onend: (() => void) | null;
-      };
-      webkitSpeechRecognition?: new () => {
-        continuous: boolean;
-        interimResults: boolean;
-        lang: string;
-        start: () => void;
-        stop: () => void;
-        onresult: ((e: { results: { 0: { 0: { transcript: string } } } }) => void) | null;
-        onerror: (() => void) | null;
-        onend: (() => void) | null;
-      };
+      SpeechRecognition?: new () => RecognitionInstance;
+      webkitSpeechRecognition?: new () => RecognitionInstance;
     };
     const SR = Win.SpeechRecognition || Win.webkitSpeechRecognition;
     if (!SR) return;
     const recognition = new SR();
     recognition.continuous = false;
     recognition.interimResults = false;
-    recognition.lang = "ar-SA";
+    recognition.lang = locale === "en" ? "en-US" : "ar-SA";
     recognition.onresult = (event) => {
       const transcript = event.results[0][0].transcript;
       const currentValue = valueRef.current;
@@ -81,14 +76,15 @@ export function ChatGPTPromptInput({
     recognition.onerror = () => setIsRecording(false);
     recognition.onend = () => setIsRecording(false);
     recognitionRef.current = recognition;
-  }, [onChange]);
+  }, [onChange, locale]);
 
   const toggleRecording = () => {
-    const r = recognitionRef.current;
-    if (!r) return;
-    if (isRecording) r.stop();
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+    if (isRecording) recognition.stop();
     else {
-      r.start();
+      recognition.lang = locale === "en" ? "en-US" : "ar-SA";
+      recognition.start();
       setIsRecording(true);
     }
   };
@@ -139,11 +135,11 @@ export function ChatGPTPromptInput({
         >
           <Tooltip>
             <TooltipTrigger asChild>
-              <button type="button" className={iconBtn} aria-label="إضافة — قريباً">
+              <button type="button" className={iconBtn} aria-label={chrome.attachAria}>
                 <Plus className="h-5 w-5" strokeWidth={2} />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top">المرفقات والوسائط ستدعم لاحقاً</TooltipContent>
+            <TooltipContent side="top">{chrome.attachTooltip}</TooltipContent>
           </Tooltip>
 
           <textarea
@@ -156,7 +152,7 @@ export function ChatGPTPromptInput({
             dir="auto"
             spellCheck
             autoComplete="off"
-            className={cn(textareaConversationClass, "text-right")}
+            className={cn(textareaConversationClass, locale === "en" ? "text-left" : "text-right")}
           />
 
           <Tooltip>
@@ -170,10 +166,10 @@ export function ChatGPTPromptInput({
                 )}
               >
                 <Mic className={cn("h-5 w-5", isRecording && "animate-pulse")} />
-                <span className="sr-only">{isRecording ? "إيقاف التسجيل" : "تحدث الآن"}</span>
+                <span className="sr-only">{isRecording ? chrome.micStop : chrome.micStart}</span>
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top">{isRecording ? "إيقاف التسجيل" : "تحدث الآن"}</TooltipContent>
+            <TooltipContent side="top">{isRecording ? chrome.micStop : chrome.micStart}</TooltipContent>
           </Tooltip>
 
           <button
@@ -192,7 +188,7 @@ export function ChatGPTPromptInput({
             ) : (
               <ArrowUp className="h-4 w-4" />
             )}
-            <span className="sr-only">إرسال</span>
+            <span className="sr-only">{chrome.send}</span>
           </button>
         </div>
 

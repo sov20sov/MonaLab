@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Bot, User, FileText, Download, Copy, Check, Loader2, Sparkles, Printer } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ChatGPTPromptInput } from '@/components/ui/chatgpt-prompt-input';
-import { MONA_DEVELOPER_NAME, MONA_SITE_ABOUT_SUMMARY } from '@/lib/site-context';
 import { Link } from "react-router-dom";
 import { ExportCoverDialog } from "@/components/ui/export-cover-dialog";
 import {
@@ -14,6 +13,14 @@ import {
   downloadReportWordWithOptions,
   printReportWithOptions,
 } from '@/lib/report-exporter';
+import type { AssistantUILang } from '@/lib/assistant-i18n';
+import {
+  assistantChatCopy,
+  buildAssistantSystemInstruction,
+  defaultExportLanguageForAssistant,
+  persistAssistantLang,
+  readStoredAssistantLang,
+} from '@/lib/assistant-i18n';
 
 type Message = {
   id: string;
@@ -22,13 +29,65 @@ type Message = {
   isStreaming?: boolean;
 };
 
+function AssistantLangToggle({
+  uiLang,
+  onChange,
+  copy,
+}: {
+  uiLang: AssistantUILang;
+  onChange: (lang: AssistantUILang) => void;
+  copy: (typeof assistantChatCopy)["ar"];
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={copy.langToggleAria}
+      className="inline-flex shrink-0 rounded-full border border-border/80 bg-muted/40 p-0.5 text-[11px] font-semibold shadow-inner min-[481px]:text-xs"
+    >
+      <button
+        type="button"
+        onClick={() => onChange("ar")}
+        className={cn(
+          "rounded-full px-2.5 py-1 transition-colors min-[481px]:px-3",
+          uiLang === "ar"
+            ? "bg-primary text-primary-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground"
+        )}
+        aria-pressed={uiLang === "ar"}
+      >
+        {copy.langArabic}
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("en")}
+        className={cn(
+          "rounded-full px-2.5 py-1 transition-colors min-[481px]:px-3",
+          uiLang === "en"
+            ? "bg-primary text-primary-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground"
+        )}
+        aria-pressed={uiLang === "en"}
+      >
+        {copy.langEnglish}
+      </button>
+    </div>
+  );
+}
+
 export default function Chat() {
+  const [uiLang, setUiLang] = useState<AssistantUILang>(() => readStoredAssistantLang());
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportTarget, setExportTarget] = useState<null | { kind: "pdf" | "word" | "print"; markdown: string }>(null);
+
+  const t = assistantChatCopy[uiLang];
+
+  useEffect(() => {
+    persistAssistantLang(uiLang);
+  }, [uiLang]);
   
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -75,18 +134,7 @@ export default function Chat() {
     setIsLoading(true);
 
     try {
-      const systemInstruction = [
-        "أنت مساعد ذكي للباحثين الأكاديميين (مونالاب). مهمتك مساعدة المستخدمين في كتابة الأبحاث، توليد المخططات، إعادة الصياغة، وتلخيص النصوص.",
-        "أجب دائماً باللغة العربية وبأسلوب أكاديمي رصين ومنسق باستخدام Markdown عند الحاجة. لا تستخدم وسوم HTML خام (مثل <a name=...>) ولا تضع عناوين Markdown في نفس سطر وسوم؛ اكتفِ بعناوين ## و### وقوائم Markdown.",
-        "",
-        "### استثناءات: أسئلة عن الموقع أو المطوّر",
-        `إذا سُئلت (بأي صيغة) عن: من طوّرك، من صنعك، من أنشأ المنصة، من هو المطور، ما اسم المطور، من مؤسس مونالاب، من أنت، تعرّف على المطور، أو ما شابه: أجب بوضوح أن المطوّر والمؤسس هو **${MONA_DEVELOPER_NAME}**، ويمكنك وصف دوره باختصار كما في المعلومات أدناه دون اختلاق أسماء أخرى.`,
-        "إذا سُئلت عن موقع مونالاب أو المنصة أو ما هي الفكرة أو الرؤية أو المهمة أو الهدف من الموقع: اشرح بصورة عامة ومهذبة ومختصرة، متسقة مع النص التالي (من صفحة «من نحن») دون اختلاق تفاصيل غير موجودة:",
-        MONA_SITE_ABOUT_SUMMARY,
-        "",
-        "### المهام الأكاديمية (القاعدة العامة)",
-        "في غير أسئلة الموقع/المطوّر أعلاه، التزم بمهام البحث والكتابة الأكاديمية فقط. رفض الطبخ والبرمجة الترفيهية وغيرها من المواضيع غير الأكاديمية بلطف، واذكر أنك مخصص للأغراض الأكاديمية والبحثية.",
-      ].join("\n");
+      const systemInstruction = buildAssistantSystemInstruction(uiLang);
 
       // Keep a short history to reduce token usage.
       const maxHistory = 10;
@@ -156,7 +204,7 @@ export default function Chat() {
     } catch (error) {
       console.error("Chat error:", error);
       setMessages(prev => prev.map(msg => 
-        msg.id === modelMessageId ? { ...msg, content: "عذراً، حدث خطأ أثناء الاتصال بالخادم. يرجى المحاولة مرة أخرى.", isStreaming: false } : msg
+        msg.id === modelMessageId ? { ...msg, content: t.errorConnection, isStreaming: false } : msg
       ));
     } finally {
       setIsLoading(false);
@@ -169,18 +217,22 @@ export default function Chat() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const suggestions = [
-    "اكتب لي خطة بحث عن تأثير الذكاء الاصطناعي على التعليم المدمج",
-    "لخص لي أهم النظريات في علم النفس المعرفي",
-    "أعد صياغة هذه الفقرة بأسلوب أكاديمي رصين..."
-  ];
-
   const hasConversation = messages.length > 0;
+  const exportDialogInitial = useMemo(
+    () => ({ language: defaultExportLanguageForAssistant(uiLang) }),
+    [uiLang]
+  );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden bg-background">
+    <div
+      className="flex min-h-0 flex-1 flex-col overflow-x-hidden bg-background"
+      dir={uiLang === "ar" ? "rtl" : "ltr"}
+      lang={uiLang}
+    >
       <ExportCoverDialog
         open={exportDialogOpen}
+        uiLang={uiLang}
+        initial={exportDialogInitial}
         onClose={() => {
           setExportDialogOpen(false);
           setExportTarget(null);
@@ -194,18 +246,18 @@ export default function Chat() {
           if (tgt.kind === "pdf") {
             void downloadReportPdfWithOptions({ markdown: tgt.markdown, options }).catch((err) => {
               console.error("PDF export failed", err);
-              alert(err instanceof Error ? err.message : "تعذر إنشاء ملف PDF.");
+              alert(err instanceof Error ? err.message : t.errPdf);
             });
           } else if (tgt.kind === "word") {
             void downloadReportWordWithOptions({ markdown: tgt.markdown, options }).catch((err) => {
               console.error("Word export failed", err);
-              alert(err instanceof Error ? err.message : "تعذر إنشاء ملف Word.");
+              alert(err instanceof Error ? err.message : t.errWord);
             });
           } else {
             printReportWithOptions(tgt.markdown, options);
           }
         }}
-        title="يمكنك ترك الحقول فارغة وسيتم التصدير بتنسيق احترافي."
+        title={t.exportDialogTitle}
       />
       {/* Messages Area */}
       <div
@@ -216,30 +268,33 @@ export default function Chat() {
         {messages.length === 0 ? (
           <div className="mx-auto flex w-full max-w-[880px] justify-center">
             <div className="flex w-full flex-col items-center justify-center px-2 pb-2 pt-3 text-center duration-300 animate-in fade-in slide-in-from-right-4 max-[480px]:pt-2 min-[481px]:max-[1024px]:max-w-[760px] min-[1025px]:max-w-[880px]">
-              <div className="mb-4 flex w-full items-center justify-center">
+              <div className="mb-4 flex w-full flex-wrap items-center justify-center gap-2">
+                <AssistantLangToggle uiLang={uiLang} onChange={setUiLang} copy={t} />
                 <Link
                   to="/how-it-works"
                   state={{ returnTo: "/chat" }}
                   className="inline-flex items-center justify-center rounded-full border border-border bg-card/60 px-4 py-2 text-sm font-medium text-foreground/90 shadow-sm backdrop-blur transition-colors hover:bg-card"
                 >
-                  آلية العمل: كيف تخرج بتقرير قوي؟
+                  {t.howItWorksLinkEmpty}
                 </Link>
               </div>
               <div className="mb-4 flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-primary/15 ring-1 ring-primary/20">
                 <Sparkles className="h-8 w-8 text-primary" />
               </div>
-              <h2 className="mb-3 text-[1.35rem] font-bold text-foreground min-[481px]:text-[1.55rem] min-[1025px]:text-[1.85rem]">مرحباً بك في مساعد مونالاب</h2>
+              <h2 className="mb-3 text-[1.35rem] font-bold text-foreground min-[481px]:text-[1.55rem] min-[1025px]:text-[1.85rem]">
+                {t.welcomeTitle}
+              </h2>
               <p className="mb-5 max-w-xl text-[0.95rem] leading-relaxed text-muted-foreground min-[481px]:text-[1rem] min-[1025px]:text-[1.05rem]">
-                أنا هنا لمساعدتك في كتابة أبحاثك، توليد الأفكار، وتنسيق تقاريرك الأكاديمية. كيف يمكنني مساعدتك اليوم؟
+                {t.welcomeSubtitle}
               </p>
               <div className="mx-auto grid w-full max-w-xl grid-cols-1 gap-2.5 min-[481px]:grid-cols-2">
-                {suggestions.map((suggestion, idx) => (
+                {t.suggestions.map((suggestion, idx) => (
                   <button
                     key={idx}
                     type="button"
                     onClick={() => handleSend(suggestion)}
                     className={cn(
-                      "w-full rounded-xl border border-border/70 bg-card/70 p-3 text-right text-[0.86rem] leading-relaxed text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5",
+                      "w-full rounded-xl border border-border/70 bg-card/70 p-3 text-start text-[0.86rem] leading-relaxed text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5",
                       idx === 2 && "min-[481px]:col-span-2 min-[481px]:max-w-xl min-[481px]:justify-self-center"
                     )}
                   >
@@ -251,63 +306,76 @@ export default function Chat() {
           </div>
         ) : (
           <div className="mx-auto w-full max-w-[880px] space-y-4 pb-1 pt-1 min-[481px]:max-w-[760px] min-[1025px]:max-w-[880px] min-[1025px]:space-y-5">
-            <div className="flex items-center justify-between gap-3 px-1">
-              <p className="text-xs text-muted-foreground">
-                نصيحة: افتح آلية العمل للحصول على خطة كتابة تقرير جاهز للتسليم.
-              </p>
-              <Link
-                to="/how-it-works"
-                state={{ returnTo: "/chat" }}
-                className="text-xs font-semibold text-primary hover:underline"
-              >
-                آلية العمل
-              </Link>
+            <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+              <AssistantLangToggle uiLang={uiLang} onChange={setUiLang} copy={t} />
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-2 min-[481px]:justify-between">
+                <p className="hidden min-w-0 flex-1 text-xs text-muted-foreground min-[481px]:block">
+                  {t.tipBanner}
+                </p>
+                <Link
+                  to="/how-it-works"
+                  state={{ returnTo: "/chat" }}
+                  className="shrink-0 text-xs font-semibold text-primary hover:underline"
+                >
+                  {t.howItWorksShort}
+                </Link>
+              </div>
             </div>
+            <p className="px-1 text-xs text-muted-foreground min-[481px]:hidden">{t.tipBanner}</p>
             {messages.map((msg) => {
               const modelDisplay =
                 msg.role === "model" ? sanitizeReportMarkdown(msg.content) : msg.content;
               return (
-              <div key={msg.id} className={cn("flex gap-2.5 min-[481px]:gap-3.5", msg.role === 'user' ? "flex-row-reverse" : "flex-row")}>
-                <div className="mt-1 flex-shrink-0">
-                  {msg.role === 'user' ? (
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm min-[481px]:h-10 min-[481px]:w-10">
-                      <User className="h-4.5 w-4.5 min-[481px]:h-5 min-[481px]:w-5" />
-                    </div>
-                  ) : (
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-foreground text-background shadow-sm min-[481px]:h-10 min-[481px]:w-10">
-                      <Bot className="h-4.5 w-4.5 min-[481px]:h-5 min-[481px]:w-5" />
-                    </div>
+              <div
+                key={msg.id}
+                className={cn(
+                  "flex w-full min-w-0 gap-2.5 min-[481px]:gap-3.5",
+                  msg.role === "user" ? "flex-row justify-end" : "flex-row justify-start"
+                )}
+              >
+                {msg.role === "model" && (
+                  <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-foreground text-background shadow-sm min-[481px]:h-10 min-[481px]:w-10">
+                    <Bot className="h-4.5 w-4.5 min-[481px]:h-5 min-[481px]:w-5" />
+                  </div>
+                )}
+
+                <div
+                  className={cn(
+                    "flex min-w-0 max-w-[88%] flex-col gap-1.5 min-[481px]:max-w-[80%] min-[1025px]:max-w-[76%]",
+                    msg.role === "user" ? "items-end" : "items-start"
                   )}
-                </div>
-                
-                <div className={cn(
-                  "flex max-w-[88%] flex-col gap-1.5 min-[481px]:max-w-[80%] min-[1025px]:max-w-[76%]",
-                  msg.role === 'user' ? "items-end" : "items-start"
-                )}>
-                  <div className={cn(
-                    "break-words rounded-2xl p-3.5 shadow-sm min-[481px]:p-4",
-                    msg.role === 'user' 
-                      ? "bg-primary text-primary-foreground rounded-tr-sm" 
-                      : "rounded-tl-sm border border-border bg-card"
-                  )}>
-                    {msg.role === 'user' ? (
-                      <p className="whitespace-pre-wrap break-words text-[0.92rem] leading-relaxed min-[481px]:text-[0.97rem]">{msg.content}</p>
+                >
+                  <div
+                    className={cn(
+                      "break-words rounded-2xl p-3.5 shadow-sm min-[481px]:p-4",
+                      msg.role === "user"
+                        ? "bg-primary text-primary-foreground rounded-tr-sm"
+                        : "rounded-tl-sm border border-border bg-card"
+                    )}
+                  >
+                    {msg.role === "user" ? (
+                      <p className="whitespace-pre-wrap break-words text-[0.92rem] leading-relaxed min-[481px]:text-[0.97rem]">
+                        {msg.content}
+                      </p>
                     ) : (
-                      <div className="prose prose-zinc dark:prose-invert max-w-none break-words prose-p:my-2 prose-p:leading-relaxed prose-headings:font-bold prose-a:text-primary prose-pre:overflow-x-auto prose-pre:bg-zinc-100 prose-pre:text-zinc-900 dark:prose-pre:bg-zinc-800 dark:prose-pre:text-zinc-50">
+                      <div
+                        dir="auto"
+                        className="prose prose-zinc dark:prose-invert max-w-none break-words prose-p:my-2 prose-p:leading-relaxed prose-headings:font-bold prose-a:text-primary prose-pre:overflow-x-auto prose-pre:bg-zinc-100 prose-pre:text-zinc-900 dark:prose-pre:bg-zinc-800 dark:prose-pre:text-zinc-50"
+                      >
                         {modelDisplay ? (
                           <div className="inline">
                             <Markdown remarkPlugins={[remarkGfm]}>{modelDisplay}</Markdown>
                             {msg.isStreaming && (
                               <span
                                 aria-hidden="true"
-                                className="ml-1 inline-block h-5 w-1 translate-y-[2px] rounded-full bg-foreground/70 animate-pulse"
+                                className="ms-1 inline-block h-5 w-1 translate-y-[2px] rounded-full bg-foreground/70 animate-pulse"
                               />
                             )}
                           </div>
                         ) : (
                           <div className="flex items-center gap-2 text-zinc-500">
                             <Loader2 className="h-4 w-4 animate-spin" />
-                            <span>جاري التفكير...</span>
+                            <span>{t.thinking}</span>
                           </div>
                         )}
                       </div>
@@ -316,9 +384,9 @@ export default function Chat() {
 
                   {msg.role === 'model' && !msg.isStreaming && msg.content && (
                     <div className="mt-1 grid w-full grid-cols-2 gap-1.5 px-1.5 min-[390px]:grid-cols-4 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:gap-2 sm:px-2">
-                      <Button variant="ghost" size="sm" className="h-8 justify-center text-xs text-muted-foreground hover:text-foreground" onClick={() => handleCopy(msg.id, modelDisplay)}>
-                        {copiedId === msg.id ? <Check className="ml-1.5 h-3.5 w-3.5 text-green-600" /> : <Copy className="ml-1.5 h-3.5 w-3.5" />}
-                        {copiedId === msg.id ? 'تم النسخ' : 'نسخ'}
+                      <Button variant="ghost" size="sm" className="h-8 justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={() => handleCopy(msg.id, modelDisplay)}>
+                        {copiedId === msg.id ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+                        {copiedId === msg.id ? t.copied : t.copy}
                       </Button>
                       <Button
                         variant="ghost"
@@ -354,11 +422,17 @@ export default function Chat() {
                         }}
                       >
                         <Printer className="h-3.5 w-3.5" />
-                        طباعة
+                        {t.print}
                       </Button>
                     </div>
                   )}
                 </div>
+
+                {msg.role === "user" && (
+                  <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm min-[481px]:h-10 min-[481px]:w-10">
+                    <User className="h-4.5 w-4.5 min-[481px]:h-5 min-[481px]:w-5" />
+                  </div>
+                )}
               </div>
             );
             })}
@@ -381,10 +455,9 @@ export default function Chat() {
             onSubmit={() => handleSend()}
             isLoading={isLoading}
             variant={hasConversation ? "conversation" : "welcome"}
+            locale={uiLang}
             placeholder={
-              hasConversation
-                ? "اكتب رسالتك… (Enter للإرسال، Shift+Enter سطر جديد)"
-                : "اكتب رسالتك هنا… (Enter للإرسال، Shift+Enter سطر جديد)"
+              hasConversation ? t.placeholderConversation : t.placeholderWelcome
             }
             quickSuggestion={undefined}
           />
@@ -392,11 +465,8 @@ export default function Chat() {
             className="mx-auto mt-1.5 max-w-[840px] space-y-1 px-1 text-center text-[0.63rem] leading-relaxed text-muted-foreground/70 min-[481px]:text-[0.67rem]"
             aria-live="polite"
           >
-            <p>قد يرتكب المساعد أخطاء؛ راجع المعلومات المهمة قبل الاعتماد عليها.</p>
-            <p>
-              المحادثة مؤقتة ولا تُحفظ — مغادرة القسم قد تمسحها. صدّر التقرير أو انسخه قبل
-              الانتقال إن أردت الاحتفاظ به.
-            </p>
+            <p>{t.disclaimer1}</p>
+            <p>{t.disclaimer2}</p>
           </div>
         </div>
       </div>
